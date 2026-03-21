@@ -1,0 +1,46 @@
+# Data and results files
+data/
+results/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+.cache/
+
+# Model checkpoints (if any)
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+
+# HuggingFace cache references (don't commit cache paths)
+.transformers_cache/
