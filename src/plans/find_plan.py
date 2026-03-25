@@ -4,21 +4,21 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 
-def create_temp_files(
-    domain_path: Path, problem_path: Path, temp_dir: Path
+def _create_temp_files(
+    domain: str, problem: str, temp_dir: Path
 ) -> Tuple[Path, Path, Path]:
-    """Copy domain and problem files into a temp directory and return working paths."""
-    tmp_domain = temp_dir / "domain.pddl"
-    tmp_problem = temp_dir / "problem.pddl"
+    """Write domain and problem files into a temp directory and return working paths."""
+    tmp_domain_path = temp_dir / "domain.pddl"
+    tmp_problem_path = temp_dir / "problem.pddl"
 
-    tmp_domain.write_text(domain_path.read_text())
-    tmp_problem.write_text(problem_path.read_text())
+    tmp_domain_path.write_text(domain)
+    tmp_problem_path.write_text(problem)
 
     plan_path = temp_dir / "output_plan"
-    return tmp_domain, tmp_problem, plan_path
+    return tmp_domain_path, tmp_problem_path, plan_path
 
 
-def build_command(
+def _build_command(
     domain_path: Path,
     problem_path: Path,
     plan_path: Path,
@@ -48,7 +48,7 @@ def _parse_cost(last_line: str) -> float:
     return float("inf")
 
 
-def run_downward(command: str, plan_path: Path) -> Tuple[bool, Optional[str], str]:
+def _run_downward(command: str, plan_path: Path) -> Tuple[bool, Optional[str], str]:
     """
     Execute Fast Downward and return the best plan found.
 
@@ -85,10 +85,6 @@ def run_downward(command: str, plan_path: Path) -> Tuple[bool, Optional[str], st
                 line.strip() for line in lines[:-1]
             )  # Strip the trailing cost comment
 
-    # Clean up generated plan files
-    for fname in plan_files:
-        fname.unlink()
-
     if best_plan is None:
         return False, "No valid plan found in output files.", ""
 
@@ -96,20 +92,20 @@ def run_downward(command: str, plan_path: Path) -> Tuple[bool, Optional[str], st
 
 
 def find_plan(
-    domain_path: Path, problem_path: Path, downward_dir: Path, time_limit: int = 20
+    domain: str, problem: str, downward_dir: Path, time_limit: int = 20
 ) -> Tuple[bool, Optional[str], str]:
     """
     Finds a plan using Fast Downward.
 
     Returns:
-        (success, error_message, plan_text)
+        (success, error_message, plan)
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
-        tmp_domain, tmp_problem, plan_path = create_temp_files(
-            domain_path, problem_path, tmp_dir
+        tmp_domain_path, tmp_problem_path, plan_path = _create_temp_files(
+            domain, problem, tmp_dir
         )
-        command = build_command(
-            tmp_domain, tmp_problem, plan_path, downward_dir, time_limit
+        command = _build_command(
+            tmp_domain_path, tmp_problem_path, plan_path, downward_dir, time_limit
         )
-        return run_downward(command, plan_path)
+        return _run_downward(command, plan_path)

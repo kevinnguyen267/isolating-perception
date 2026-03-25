@@ -2,157 +2,327 @@ import base64
 import os
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from dotenv import load_dotenv
-from models.vlm_server import ensure_vllm_server
+from models.vllm_server import ensure_vllm_server
 from openai import OpenAI
+from utils.parse import create_problem_from_sections, parse_section
 
 load_dotenv()
 VLLM_PORT = int(os.getenv("VLLM_PORT", "15100"))
 VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", f"http://localhost:{VLLM_PORT}/v1")
 
 
-def _encode_image_base64(image_path: Path) -> str:
-    """Read an image file and return its base64-encoded string."""
-    with open(image_path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
-
-
 def _guess_mime_type(image_path: Path) -> str:
     """Guess MIME type from file extension."""
-    suffix = image_path.suffix.lower()
     mime_map = {
         ".png": "image/png",
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",
         ".gif": "image/gif",
         ".webp": "image/webp",
-        ".bmp": "image/bmp",
-        ".tiff": "image/tiff",
     }
-    return mime_map.get(suffix, "image/png")
+    suffix = image_path.suffix.lower()
+    if suffix not in mime_map:
+        raise ValueError(f"Unsupported image format: {suffix}")
+    return mime_map[suffix]
 
 
-def _build_multimodal_content(
-    domain_text: str,
-    instruction: str,
+def _image_block(path: Path) -> dict:
+    mime = _guess_mime_type(path)
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+    return {
+        "type": "image_url",
+        "image_url": {"url": f"data:{mime};base64,{b64}"},
+    }
+
+
+def _build_grounding_prompt_from_imgs(
+    objects: set[str],
+    predicates: set[str],
     image_paths: List[Path],
-) -> tuple:
-    """Combines domain context, text instruction, and images into a single message payload."""
-    system_text = (
-        "You are helping a robotic planning task. "
-        "Given the image of a scene and an instruction, generate "
-        "the PDDL file with objects, initial state, and goal specification. "
-        "Your output should adhere to the constraints defined in the provided domain file. "
-        "You must output the PDDL file in the correct format. "
-        "Output ONLY the PDDL problem text, "
-        "enclosed in a ```pddl ... ``` code block."
-    )
-
-    content: List[dict] = []
-
-    content.append(
+) -> List[dict]:
+    """Builds a prompt to generate grounded predicates from the images, given the set of objects and predicates."""
+    return [
         {
             "type": "text",
             "text": (
-                f"For the current domain, this is the domain file:\n"
-                f"```pddl\n{domain_text}\n```\n\n"
-                f"The image of the scene has been provided. "
-                f"Please first analyze the image and then generate the PDDL problem.\n\n"
+                "Given observations of the same static scene from different perspectives, the set of objects, and the set of predicates, "
+                "reconcile all views into a single consistent world state and determine the true grounded predicates.\n\n"
+                "Hints:\n"
+                "Every object exists exactly once in the scene.\n"
+                "If no robot arm or gripper is visible in the image, assume the gripper is empty and not holding any object.\n"
+                "The predicate (on ?x - block ?y - block) means block x is on block y."
             ),
-        }
-    )
-
-    for img_path in image_paths:
-        b64 = _encode_image_base64(img_path)
-        mime = _guess_mime_type(img_path)
-        content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64}"},
-            }
-        )
-
-    content.append({"type": "text", "text": f"Instruction: {instruction}\n"})
-
-    return system_text, content
+        },
+        *(_image_block(p) for p in image_paths),
+        {
+            "type": "text",
+            "text": (
+                f"Objects:\n{', '.join(sorted(objects))}\n\n"
+                f"Predicates:\n{', '.join(sorted(predicates))}"
+            ),
+        },
+    ]
 
 
-def _extract_pddl_block(raw_output: str) -> str:
-    """Extract the PDDL problem text from a fenced code block, falling back to raw output."""
-    match = re.search(r"```(?:pddl)?\s*\n?(.*?)```", raw_output, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    return raw_output.strip()
+def _build_grounding_prompt_from_instruction(
+    objects: set[str],
+    predicates: set[str],
+    instruction: str,
+) -> List[dict]:
+    """Builds a prompt to generate grounded predicates from the instruction, given the set of objects and predicates."""
+    return [
+        {
+            "type": "text",
+            "text": (
+                "Given an instruction, the set of objects, and the set of predicates, determine the true grounded predicates.\n\n"
+                "Hints:\n"
+                "If no robot arm or gripper is mentioned in the instruction, assume the gripper is empty and not holding any object.\n"
+                "The predicate (on ?x - block ?y - block) means block x is on block y.\n\n"
+                f"Instruction:\n{instruction}\n\n"
+                f"Objects:\n{', '.join(sorted(objects))}\n\n"
+                f"Predicates:\n{', '.join(sorted(predicates))}"
+            ),
+        },
+    ]
 
 
-def _generate_via_openai_client(
+def _generate_response(
     model_id: str,
-    system_text: str,
     user_content: List[dict],
     max_tokens: int,
     temperature: float,
-    base_url: str | None,
-    api_key: str = "EMPTY",
+    seed: int,
+    quantization: bool,
 ) -> str:
-    """Generate text using an OpenAI-compatible chat-completion endpoint.
-    Works for both local vLLM (with base_url) and GPT (with api_key)."""
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    """Generate a response using GPT (api_key) or local vLLM (base_url)."""
+    if model_id == "gpt-5.4":
+        client = OpenAI()
+    else:
+        ensure_vllm_server(model_id, VLLM_PORT, quantization)
+        client = OpenAI(api_key="EMPTY", base_url=VLLM_BASE_URL)
 
     response = client.chat.completions.create(
         model=model_id,
         messages=[
-            {"role": "system", "content": system_text},
             {"role": "user", "content": user_content},  # type: ignore
         ],
         max_tokens=max_tokens,
         temperature=temperature,
+        seed=seed,
     )
 
-    raw_text = response.choices[0].message.content or ""
-    return _extract_pddl_block(raw_text)
+    return response.choices[0].message.content or ""
+
+
+def _cleanup_response_and_extract_preds(
+    objects: set[str],
+    predicates: set[str],
+    response: str,
+    model_id: str,
+    max_tokens: int,
+    temperature: float,
+    seed: int,
+    quantization: bool,
+) -> tuple[set[str], str]:
+    """Use a second prompt to clean up the VLM response and extract the final set of grounded predicates.
+
+    Returns: (grounded_preds, cleanup_response)"""
+    object_names = set(o.split(" ")[0] for o in objects)
+    pred_names = set(p.split(" ")[0] for p in predicates)
+
+    cleanup_prompt = [
+        {
+            "type": "text",
+            "text": (
+                "Extract all true grounded predicates from the response below.\n\n"
+                "Rules:\n"
+                f"- Valid objects: {', '.join(sorted(object_names))}\n"
+                f"- Valid predicates: {', '.join(sorted(pred_names))}\n"
+                "- Fix any typos in object names to match the valid objects list.\n"
+                "- Fix any typos in predicates to match the valid predicates list.\n"
+                "- Remove any predicates not in the valid predicates list.\n"
+                "Output each predicate on its own line as: (predicate_name arg1 arg2 ...)\n"
+                "No extra text, headers, or formatting.\n\n"
+                f"Response:\n{response}"
+            ),
+        },
+    ]
+    cleanup_response = _generate_response(
+        model_id,
+        cleanup_prompt,
+        max_tokens,
+        temperature,
+        seed,
+        quantization,
+    )
+
+    lines = cleanup_response.strip().splitlines()
+    grounded_preds = set()
+    for pred in lines:
+        tokens = pred.replace("(", " ").replace(")", " ").replace(",", " ").split()
+        if not tokens:
+            continue
+        grounded_preds.add(f"({tokens[0]} {' '.join(tokens[1:])})")
+    return grounded_preds, cleanup_response
+
+
+def _generate_grounded_preds(
+    model_id: str,
+    context: List[Path] | str,
+    objects: set[str],
+    predicates: set[str],
+    max_tokens: int,
+    temperature: float,
+    seed: int,
+    quantization: bool,
+) -> tuple[set[str], str, str]:
+    """Generate grounded predicates in two steps.
+
+    If context is a list of image paths, generate grounded predicates from the images.
+    If context is a string instruction, generate grounded predicates from the instruction.
+
+    First, generate grounded predicates from either the images or the
+    instruction. Then, use a second prompt to clean up the VLM response
+    and extract the final set of grounded predicates.
+
+    Returns: (grounded_preds, VLM_response, cleanup_VLM_response)
+    """
+    if isinstance(context, str):
+        prompt = _build_grounding_prompt_from_instruction(objects, predicates, context)
+    else:
+        prompt = _build_grounding_prompt_from_imgs(objects, predicates, context)
+
+    response = _generate_response(
+        model_id,
+        prompt,
+        max_tokens,
+        temperature,
+        seed,
+        quantization,
+    )
+
+    grounded_preds, cleanup_response = _cleanup_response_and_extract_preds(
+        objects,
+        predicates,
+        response,
+        model_id,
+        max_tokens,
+        temperature,
+        seed,
+        quantization,
+    )
+
+    return grounded_preds, response, cleanup_response
 
 
 def generate_pddl_problem(
-    model_name: str,
     model_id: str,
-    dataset_dir: Path,
+    dataset_problem_dir: Path,
+    gt_domain: str,
+    gt_problem: str,
     max_tokens: int,
     temperature: float,
-    api_key: Optional[str] = None,
-) -> str:
-    """Generate a PDDL problem file from a domain file, text instruction, and images."""
-    domain_text = (dataset_dir / "domain.pddl").read_text()
-    instruction = (dataset_dir / "instruction.txt").read_text()
-    image_paths = sorted((dataset_dir / "observations").glob("*.*"))
-    if not image_paths:
-        raise FileNotFoundError(f"No images found in {dataset_dir / 'observations'}")
+    seed: int,
+    quantization: bool,
+) -> tuple[str, str, str, str, str]:
+    """Generates a PDDL problem file given context from the dataset.
 
-    system_text, user_content = _build_multimodal_content(
-        domain_text, instruction, image_paths
+    Returns: (problem, init_response, goal_response, init_cleanup_response, goal_cleanup_response)
+    """
+    # TODO: Placeholder: given objects for blocksworld_real
+    objects = set(
+        [
+            "robot1 - robot",
+            "red_block - block",
+            "orange_block - block",
+            "yellow_block - block",
+            "green_block - block",
+            "blue_block - block",
+            "purple_block - block",
+        ]
     )
 
-    if model_name == "GPT-5.4":
-        if api_key is None:
-            raise ValueError("--api_key is required for GPT")
-        return _generate_via_openai_client(
-            model_id=model_id,
-            system_text=system_text,
-            user_content=user_content,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            base_url=None,
-            api_key=api_key,
+    # TODO: Placeholder: given objects for blocksworld_sim
+    # bboxes_path = dataset_problem_dir / "annotated_bbox.json"
+    # with bboxes_path.open() as f:
+    #     bboxes = json.load(f)
+    # object_names = set(bboxes.keys())
+    # objects = set()
+    # for name in object_names:
+    #     objects.add(f"{name} - block")
+    # object_names.add("robot1")
+    # objects.add("robot1 - robot")
+
+    # Extract predicates from the domain
+    predicates = parse_section(gt_domain, ":predicates")
+    predicates = set(p.strip("()") for p in predicates)
+
+    # Extract image paths and instruction from the dataset directory
+    image_paths = sorted((dataset_problem_dir / "observations").glob("*.*"))
+    if not image_paths:
+        raise FileNotFoundError(
+            f"No images found in {dataset_problem_dir / 'observations'}"
         )
-    else:
-        ensure_vllm_server(model_id, VLLM_PORT)  # local vLLM server
-        return _generate_via_openai_client(
-            model_id=model_id,
-            system_text=system_text,
-            user_content=user_content,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            base_url=VLLM_BASE_URL,
-            api_key="EMPTY",
+    try:
+        instruction = (dataset_problem_dir / "instruction.txt").read_text()
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"No instruction found in {dataset_problem_dir / 'instruction.txt'}"
         )
+
+    # Generate init and goal grounded predicates
+    init_preds, init_response, init_cleanup_response = _generate_grounded_preds(
+        model_id,
+        image_paths,
+        objects,
+        predicates,
+        max_tokens,
+        temperature,
+        seed,
+        quantization,
+    )
+    goal_preds, goal_response, goal_cleanup_response = _generate_grounded_preds(
+        model_id,
+        instruction,
+        objects,
+        predicates,
+        max_tokens,
+        temperature,
+        seed,
+        quantization,
+    )
+
+    # Extract domain name from the ground truth domain file
+    match = re.search(r"\(domain\s+(\w+)\)", gt_domain)
+    if not match:
+        raise ValueError(
+            "Could not extract domain name from the ground truth domain file."
+        )
+    domain_name = match.group(1)
+
+    # Extract problem name from the ground truth problem file
+    match = re.search(r"\(problem\s+(\w+)\)", gt_problem)
+    if not match:
+        raise ValueError(
+            "Could not extract problem name from the ground truth problem file."
+        )
+    problem_name = match.group(1)
+
+    problem = create_problem_from_sections(
+        problem_name,
+        domain_name,
+        objects,
+        init_preds,
+        goal_preds,
+    )
+    return (
+        problem,
+        init_response,
+        goal_response,
+        init_cleanup_response,
+        goal_cleanup_response,
+    )

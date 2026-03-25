@@ -14,6 +14,7 @@ VLLM_SERVE_CONFIG = {
         "max_model_len": 8192,
         "gpu_memory_utilization": 0.9,
         "mm_encoder_tp_mode": "data",
+        "quantization": "fp8",
     }
 }
 
@@ -40,7 +41,7 @@ def _vllm_model_matches(model_id: str, port: int) -> bool:
         return False
 
 
-def _launch_vllm_server(model_id: str, port: int) -> None:
+def _launch_vllm_server(model_id: str, port: int, quantization: bool) -> None:
     """Launch a vLLM server for *model_id* and block until it is healthy."""
     cfg = VLLM_SERVE_CONFIG[model_id]
 
@@ -65,6 +66,8 @@ def _launch_vllm_server(model_id: str, port: int) -> None:
         cmd.append("--enable-expert-parallel")
     if cfg.get("mm_encoder_tp_mode"):
         cmd.extend(["--mm-encoder-tp-mode", cfg["mm_encoder_tp_mode"]])
+    if quantization and cfg.get("quantization"):
+        cmd.extend(["--quantization", cfg["quantization"]])
 
     print(f"Launching vLLM server: {' '.join(cmd)}")
     log_path = Path(f"logs/vllm_{model_id.replace('/', '_')}.log")
@@ -93,7 +96,7 @@ def _launch_vllm_server(model_id: str, port: int) -> None:
     )
 
 
-def ensure_vllm_server(model_id: str, port: int) -> None:
+def ensure_vllm_server(model_id: str, port: int, quantization: bool) -> None:
     """Ensure a vLLM server is running for *model_id*, else launch one."""
     if _vllm_health_ok(port):
         if _vllm_model_matches(model_id, port):
@@ -102,4 +105,4 @@ def ensure_vllm_server(model_id: str, port: int) -> None:
             f"A vLLM server is running on port {port} but serving a different model. "
             f"Stop it first or use a different VLLM_PORT."
         )
-    _launch_vllm_server(model_id, port)
+    _launch_vllm_server(model_id, port, quantization)

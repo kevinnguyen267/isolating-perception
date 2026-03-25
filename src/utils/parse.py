@@ -77,11 +77,8 @@ def _parse_objects(text: str) -> set[str]:
     return objects
 
 
-def _parse_init_goal(text: str, section: str) -> set[str]:
-    """Parse the :init or :goal section and return a set of 'predicate args' strings."""
-    if section not in (":init", ":goal"):
-        raise ValueError(f"Section must be ':init' or ':goal', got: {section}")
-
+def parse_section(text: str, section: str) -> set[str]:
+    """Parse the :section and return a set of 'predicate args' strings."""
     inner = _get_body(text, section)
     if not inner:
         return set()
@@ -108,7 +105,10 @@ def _parse_init_goal(text: str, section: str) -> set[str]:
 def extract_normalized_problem(
     text: str,
 ) -> tuple[str, str, set[str], set[str], set[str]]:
-    """Parse the problem_name, domain_name, and :objects, :init, :goal sections of a problem file."""
+    """Parse the problem_name, domain_name, and :objects, :init, :goal sections of a problem file.
+
+    Returns: (problem_name, domain_name, objects, init, goal)
+    """
     text = re.sub(r";.*", "", text)
 
     prob_match = re.search(r"\(\s*define\s+\(problem\s+(\S+)\)", text)
@@ -117,17 +117,19 @@ def extract_normalized_problem(
     domain_name = domain_match.group(1) if domain_match else "unknown"
 
     objects = _parse_objects(text)
-    init = _parse_init_goal(text, ":init")
-    goal = _parse_init_goal(text, ":goal")
+    init = parse_section(text, ":init")
+    goal = parse_section(text, ":goal")
     return prob_name, domain_name, objects, init, goal
 
 
-def normalize_problem(problem_text: str) -> str:
-    """Normalize a problem file by parsing and reformatting the :objects, :init, and :goal sections with consistent formatting and alias normalization."""
-    prob_name, domain_name, objects, init, goal = extract_normalized_problem(
-        problem_text
-    )
-
+def create_problem_from_sections(
+    prob_name: str,
+    domain_name: str,
+    objects: set[str],
+    init: set[str],
+    goal: set[str],
+) -> str:
+    """Create a problem string from the given sections."""
     # Group objects by type: "(name - type)" -> {type: [name, ...]}
     obj_by_type: dict[str, list[str]] = {}
     for o in sorted(objects):
@@ -150,6 +152,14 @@ def normalize_problem(problem_text: str) -> str:
         f"  (:goal (and\n    {goal_str}\n  ))\n"
         f")"
     )
+
+
+def normalize_problem(problem_text: str) -> str:
+    """Normalize a problem file by parsing and reformatting the :objects, :init, and :goal sections with consistent formatting and alias normalization."""
+    prob_name, domain_name, objects, init, goal = extract_normalized_problem(
+        problem_text
+    )
+    return create_problem_from_sections(prob_name, domain_name, objects, init, goal)
 
 
 def normalize_plan(plan_text: str) -> str:

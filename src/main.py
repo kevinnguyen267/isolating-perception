@@ -1,12 +1,22 @@
 import argparse
 import json
+import os
 from pathlib import Path
+from time import time
 
 from models.vlm import generate_pddl_problem
 from plans.find_plan import find_plan
 from plans.validate_plan import validate_plan
-from utils.parse import normalize_problem, normalize_plan
-from utils.statistics import compute_statistics
+from utils.helpers import get_gt_domain_and_problem, seed_everything
+from utils.parse import (
+    normalize_plan,
+    normalize_problem,
+)
+from utils.statistics import (
+    compute_plan_success_with_ground_truth,
+    compute_precision_recall_f1,
+    get_eval_report,
+)
 
 MODEL_MAP = {
     "qwen": "Qwen/Qwen3-VL-235B-A22B-Instruct",
@@ -16,14 +26,14 @@ MODEL_MAP = {
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Generate a PDDL problem file from images via a VLM, then solve with Fast Downward"
+        description="Prompting VLMs to generate plans using different methodologies"
     )
     parser.add_argument(
         "--model_name",
         type=str,
         default="qwen",
         choices=list(MODEL_MAP.keys()),
-        help="Name of the VLM to use for problem file generation",
+        help="Name of the VLM to use",
     )
     parser.add_argument(
         "--dataset",
@@ -34,35 +44,45 @@ def parse_args():
     parser.add_argument(
         "--fast_downward_dir",
         type=str,
-        default="/home/mh3897/pddl/villain/downward",
+        default="downward",
         help="Directory containing fast-downward.py",
     )
     parser.add_argument(
         "--max_tokens",
         type=int,
-        default=1024,
+        default=2048,
         help="Maximum number of tokens to generate",
     )
     parser.add_argument(
         "--temperature",
         type=float,
-        default=0.7,
+        default=0,
         help="Sampling temperature for generation",
     )
     parser.add_argument(
-        "--api_key",
-        type=str,
-        default=None,
-        help="API key for OpenAI-compatible API",
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility",
+    )
+    parser.add_argument(
+        "--quantization",
+        action="store_true",
+        help="Whether to use quantized weights for local vLLM inference (if applicable)",
     )
 
     return parser.parse_args()
 
 
 def main():
+    timer_start = time()
     args = parse_args()
+    seed_everything(args.seed)
 
-    # Validate Fast Downward directory exists
+    # Validate API key for GPT (load_dotenv was already called by top-level code in models/vlm.py)
+    if args.model_name == "gpt" and "OPENAI_API_KEY" not in os.environ:
+        raise EnvironmentError("OPENAI_API_KEY environment variable not set.")
+
     downward_dir = Path(args.fast_downward_dir)
     if not (downward_dir / "fast-downward.py").exists():
         raise FileNotFoundError(
@@ -70,98 +90,106 @@ def main():
         )
 
     model_id = MODEL_MAP[args.model_name]
-    print(
-        f"Generating PDDL problem files with {args.model_name} ({model_id}) for {args.dataset}..."
-    )
+    print(f"Running {args.dataset} using {model_id}...")
 
-    output_dir = output_dir = Path("results") / args.dataset / args.model_name
+    output_dir = Path("results") / args.dataset / args.model_name
     output_dir.mkdir(parents=True, exist_ok=True)
-    statistics_summary = {}
 
-    # Iterate over all problem instances in the dataset directory (assumes subdirs for each problem)
     dataset_dir = Path("data") / args.dataset
     if not dataset_dir.exists():
         raise FileNotFoundError(f"Dataset directory not found: {dataset_dir}")
+
+    # Iterate over all problem instances in the dataset directory (assumes subdirs for each problem)
+    statistics_summary = {}
     for dataset_problem_dir in sorted(dataset_dir.iterdir()):
         if dataset_problem_dir.is_dir():
-            output_problem_dir = output_dir / dataset_problem_dir.name
+            print(f"  Processing {dataset_problem_dir.name}...")
+            statistics_summary[dataset_problem_dir.name] = {}
+
+            output_problem_dir = output_dir / "problems" / dataset_problem_dir.name
             output_problem_dir.mkdir(parents=True, exist_ok=True)
 
-            print(f"Processing: {dataset_problem_dir.name}")
+            # Add a symlink to the problem's data directory for reference
+            symlink_path = output_problem_dir / "source_data"
+            if not symlink_path.exists():
+                symlink_path.symlink_to(dataset_problem_dir.resolve())
 
-            gt_domain_path = dataset_problem_dir / "domain.pddl"
-
-            # Copy and normalize ground truth problem file
-            gt_problem_path = output_problem_dir / "gt_problem.pddl"
-            gt_problem_path.write_text(
-                normalize_problem(
-                    (dataset_problem_dir / "problem.pddl").read_text(),
-                )
+            # Get ground truth domain (unmodified) and problem (normalized) texts
+            gt_domain, gt_problem, gt_domain_path, gt_problem_path = (
+                get_gt_domain_and_problem(dataset_problem_dir, output_problem_dir)
             )
 
             # Generate PDDL problem file using the VLM
-            problem_text = generate_pddl_problem(
-                model_name=args.model_name,
-                model_id=model_id,
-                dataset_dir=dataset_problem_dir,
-                max_tokens=args.max_tokens,
-                temperature=args.temperature,
-                api_key=args.api_key,
+            (
+                problem,
+                init_response,
+                goal_response,
+                init_cleanup_response,
+                goal_cleanup_response,
+            ) = generate_pddl_problem(
+                model_id,
+                dataset_problem_dir,
+                gt_domain,
+                gt_problem,
+                args.max_tokens,
+                args.temperature,
+                args.seed,
+                args.quantization,
             )
-            problem_text = normalize_problem(problem_text)
-            problem_path = output_problem_dir / "problem.pddl"
-            problem_path.write_text(problem_text)
-            
-            # Compute statistics against the ground truth problem file
-            statistics_summary[dataset_problem_dir.name] = compute_statistics(
-                gt_problem_path, problem_path
+            problem = normalize_problem(problem)
+            (output_problem_dir / "problem.pddl").write_text(problem)
+
+            # Save VLM responses for init and goal sections
+            (output_problem_dir / "init_response.txt").write_text(init_response)
+            (output_problem_dir / "goal_response.txt").write_text(goal_response)
+            (output_problem_dir / "init_cleanup_response.txt").write_text(
+                init_cleanup_response
+            )
+            (output_problem_dir / "goal_cleanup_response.txt").write_text(
+                goal_cleanup_response
             )
 
-            # Solve the generated problem with Fast Downward
-            success, error_msg, plan_text = find_plan(
-                gt_domain_path, problem_path, downward_dir
+            # Solve the generated problem using Fast Downward
+            downward_success, downward_error_msg, plan = find_plan(
+                gt_domain, problem, downward_dir
             )
-            plan_text = normalize_plan(plan_text)
-            plan_path = output_problem_dir / "plan.txt"
-            if success:
-                plan_path.write_text(plan_text)
-            else:
-                plan_path.write_text(f"FAST DOWNWARD ERROR:\n{error_msg}")
+            if not downward_success:
+                statistics_summary[dataset_problem_dir.name]["downward_success"] = False
 
-            # Record whether the plan was successful with unified planning
-            success, error_msg = validate_plan(
-                gt_domain_path, gt_problem_path, plan_path
+            plan = normalize_plan(plan)
+            (output_problem_dir / "plan.txt").write_text(plan)
+
+            # Check if plan was successful using unified planning
+            plan_success, plan_error_msg = validate_plan(
+                gt_domain_path, gt_problem_path, plan
             )
-            statistics_summary[dataset_problem_dir.name]["plan_success"] = success
-            statistics_summary[dataset_problem_dir.name]["plan_success_error_msg"] = (
-                f"UNIFIED PLANNING ERROR:\n{error_msg}" if not success else ""
+            statistics_summary[dataset_problem_dir.name]["plan_success"] = plan_success
+
+            # Determine whether the plan failed due to init or goal state (or both)
+            if not plan_success:
+                statistics_summary[dataset_problem_dir.name].update(
+                    compute_plan_success_with_ground_truth(
+                        gt_problem,
+                        problem,
+                        gt_domain,
+                        gt_domain_path,
+                        gt_problem_path,
+                        downward_dir,
+                    )
+                )
+
+            # Record precision, recall, and F1 statistics
+            statistics_summary[dataset_problem_dir.name].update(
+                compute_precision_recall_f1(gt_problem, problem)
             )
 
-    # After processing all problems, save an evaluation report to JSON
-    statistics_summary_avg = {}
-    statistics_summary_avg["plan_success_rate"] = sum(
-        statistics_summary[p]["plan_success"] for p in statistics_summary
-    ) / len(statistics_summary)
-    for key in ("objects", "init", "goal"):
-        statistics_summary_avg[key] = {
-            "precision": sum(
-                statistics_summary[p][key]["precision"] for p in statistics_summary
-            )
-            / len(statistics_summary),
-            "recall": sum(
-                statistics_summary[p][key]["recall"] for p in statistics_summary
-            )
-            / len(statistics_summary),
-            "f1": sum(statistics_summary[p][key]["f1"] for p in statistics_summary)
-            / len(statistics_summary),
-        }
-    eval_report = {
-        "average_statistics": statistics_summary_avg,
-        "individual_statistics": statistics_summary,
-    }
-    with open(output_dir / "eval_report.json", "w") as f:
-        json.dump(eval_report, f, indent=4)
+            # Update evaluation report
+            eval_report = get_eval_report(statistics_summary)
+            with open(output_dir / "eval_report.json", "w") as f:
+                json.dump(eval_report, f, indent=4)
+
     print(f"Evaluation report saved to: {(output_dir / 'eval_report.json').resolve()}")
+    print(f"Experiment complete ({int((time() - timer_start) / 60) + 1} minutes).")
 
 
 if __name__ == "__main__":
