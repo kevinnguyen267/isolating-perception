@@ -8,6 +8,15 @@ from pathlib import Path
 import torch
 
 VLLM_SERVE_CONFIG = {
+    "Qwen/Qwen3.5-122B-A10B": {
+        "tp_size": torch.cuda.device_count(),
+        "expert_parallel": True,
+        "max_model_len": 262144,
+        "reasoning_parser": "qwen3",
+        "gpu_memory_utilization": 0.9,
+        "mm_encoder_tp_mode": "data",
+        "quantization": "fp8",
+    },
     "Qwen/Qwen3-VL-235B-A22B-Instruct": {
         "tp_size": torch.cuda.device_count(),
         "expert_parallel": True,
@@ -15,7 +24,7 @@ VLLM_SERVE_CONFIG = {
         "gpu_memory_utilization": 0.9,
         "mm_encoder_tp_mode": "data",
         "quantization": "fp8",
-    }
+    },
 }
 
 
@@ -43,6 +52,8 @@ def _vllm_model_matches(model_id: str, port: int) -> bool:
 
 def _launch_vllm_server(model_id: str, port: int, quantization: bool) -> None:
     """Launch a vLLM server for *model_id* and block until it is healthy."""
+    if model_id not in VLLM_SERVE_CONFIG:
+        raise ValueError(f"Model {model_id} is not configured for vLLM serving.")
     cfg = VLLM_SERVE_CONFIG[model_id]
 
     vllm_bin = shutil.which("vllm")
@@ -66,6 +77,8 @@ def _launch_vllm_server(model_id: str, port: int, quantization: bool) -> None:
         cmd.append("--enable-expert-parallel")
     if cfg.get("mm_encoder_tp_mode"):
         cmd.extend(["--mm-encoder-tp-mode", cfg["mm_encoder_tp_mode"]])
+    if cfg.get("reasoning_parser"):
+        cmd.extend(["--reasoning-parser", cfg["reasoning_parser"]])
     if quantization and cfg.get("quantization"):
         cmd.extend(["--quantization", cfg["quantization"]])
 
@@ -73,8 +86,9 @@ def _launch_vllm_server(model_id: str, port: int, quantization: bool) -> None:
     log_path = Path(f"logs/vllm_{model_id.replace('/', '_')}.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "w") as log_file:
-        subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
-    print(f"vLLM log: {log_path}")
+        proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+        (log_path.parent / f"{log_path.stem}.pid").write_text(str(proc.pid))
+    print(f"vLLM log: {log_path.resolve()}")
 
     # Wait for server to become healthy
     print("Waiting for vLLM server to be ready...", end="", flush=True)
@@ -92,7 +106,7 @@ def _launch_vllm_server(model_id: str, port: int, quantization: bool) -> None:
 
     raise RuntimeError(
         f"vLLM server did not become healthy within {max_wait}s. "
-        f"Check logs at {log_path}"
+        f"Check logs at {log_path.resolve()} for details."
     )
 
 

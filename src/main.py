@@ -1,10 +1,13 @@
 import argparse
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 from time import time
 
-from models.vlm import generate_pddl_problem
+from models.formalizer import generate_pddl_problem
+from models.formalizer_reprompt import regenerate_pddl_problem
+from models.planner import generate_plan
 from plans.find_plan import find_plan
 from plans.validate_plan import validate_plan
 from utils.helpers import get_gt_domain_and_problem, seed_everything
@@ -15,11 +18,13 @@ from utils.parse import (
 from utils.statistics import (
     compute_plan_success_with_ground_truth,
     compute_precision_recall_f1,
-    get_eval_report,
+    get_eval_report_formalizer,
+    get_eval_report_planner,
 )
 
 MODEL_MAP = {
-    "qwen": "Qwen/Qwen3-VL-235B-A22B-Instruct",
+    "qwen3.5": "Qwen/Qwen3.5-122B-A10B",
+    "qwen3": "Qwen/Qwen3-VL-235B-A22B-Instruct",
     "gpt": "gpt-5.4",
 }
 
@@ -31,7 +36,7 @@ def parse_args():
     parser.add_argument(
         "--model_name",
         type=str,
-        default="qwen",
+        default="qwen3",
         choices=list(MODEL_MAP.keys()),
         help="Name of the VLM to use",
     )
@@ -40,6 +45,13 @@ def parse_args():
         type=str,
         default="blocksworld_sim",
         help="Dataset to use for VLM context",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["formalizer", "planner"],
+        default="formalizer",
+        help="Mode of operation",
     )
     parser.add_argument(
         "--fast_downward_dir",
@@ -79,7 +91,7 @@ def main():
     args = parse_args()
     seed_everything(args.seed)
 
-    # Validate API key for GPT (load_dotenv was already called by top-level code in models/vlm.py)
+    # Validate API key for GPT (load_dotenv was already called by top-level code in utils/vlm.py)
     if args.model_name == "gpt" and "OPENAI_API_KEY" not in os.environ:
         raise EnvironmentError("OPENAI_API_KEY environment variable not set.")
 
@@ -92,8 +104,13 @@ def main():
     model_id = MODEL_MAP[args.model_name]
     print(f"Running {args.dataset} using {model_id}...")
 
-    output_dir = Path("results") / args.dataset / args.model_name
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = (
+        Path("results") / args.dataset / args.mode / args.model_name / timestamp
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Saving evaluation report to: {(output_dir / 'eval_report.json').resolve()}")
 
     dataset_dir = Path("data") / args.dataset
     if not dataset_dir.exists():
@@ -119,74 +136,152 @@ def main():
                 get_gt_domain_and_problem(dataset_problem_dir, output_problem_dir)
             )
 
-            # Generate PDDL problem file using the VLM
-            (
-                problem,
-                init_response,
-                goal_response,
-                init_cleanup_response,
-                goal_cleanup_response,
-            ) = generate_pddl_problem(
-                model_id,
-                dataset_problem_dir,
-                gt_domain,
-                gt_problem,
-                args.max_tokens,
-                args.temperature,
-                args.seed,
-                args.quantization,
-            )
-            problem = normalize_problem(problem)
-            (output_problem_dir / "problem.pddl").write_text(problem)
+            if args.mode == "planner":
+                # Generate plan using VLM
+                plan, response = generate_plan(
+                    model_id,
+                    dataset_problem_dir,
+                    args.max_tokens,
+                    args.temperature,
+                    args.seed,
+                    args.quantization,
+                )
+                plan = normalize_plan(plan)
+                (output_problem_dir / "plan.txt").write_text(plan)
 
-            # Save VLM responses for init and goal sections
-            (output_problem_dir / "init_response.txt").write_text(init_response)
-            (output_problem_dir / "goal_response.txt").write_text(goal_response)
-            (output_problem_dir / "init_cleanup_response.txt").write_text(
-                init_cleanup_response
-            )
-            (output_problem_dir / "goal_cleanup_response.txt").write_text(
-                goal_cleanup_response
-            )
+                # Save VLM response
+                (output_problem_dir / "response.txt").write_text(response)
 
-            # Solve the generated problem using Fast Downward
-            downward_success, downward_error_msg, plan = find_plan(
-                gt_domain, problem, downward_dir
-            )
-            if not downward_success:
-                statistics_summary[dataset_problem_dir.name]["downward_success"] = False
-
-            plan = normalize_plan(plan)
-            (output_problem_dir / "plan.txt").write_text(plan)
-
-            # Check if plan was successful using unified planning
-            plan_success, plan_error_msg = validate_plan(
-                gt_domain_path, gt_problem_path, plan
-            )
-            statistics_summary[dataset_problem_dir.name]["plan_success"] = plan_success
-
-            # Determine whether the plan failed due to init or goal state (or both)
-            if not plan_success:
-                statistics_summary[dataset_problem_dir.name].update(
-                    compute_plan_success_with_ground_truth(
-                        gt_problem,
-                        problem,
-                        gt_domain,
-                        gt_domain_path,
-                        gt_problem_path,
-                        downward_dir,
-                    )
+                # Check if plan was successful using UP
+                plan_success, plan_error_msg = validate_plan(
+                    gt_domain_path, gt_problem_path, plan
+                )
+                statistics_summary[dataset_problem_dir.name]["plan_success"] = (
+                    plan_success
                 )
 
-            # Record precision, recall, and F1 statistics
-            statistics_summary[dataset_problem_dir.name].update(
-                compute_precision_recall_f1(gt_problem, problem)
-            )
+                # Save evaluation report
+                eval_report = get_eval_report_planner(statistics_summary)
+                with open(output_dir / "eval_report.json", "w") as f:
+                    json.dump(eval_report, f, indent=4)
 
-            # Update evaluation report
-            eval_report = get_eval_report(statistics_summary)
-            with open(output_dir / "eval_report.json", "w") as f:
-                json.dump(eval_report, f, indent=4)
+            elif args.mode == "formalizer":
+                # Generate PDDL problem file using VLM
+                (
+                    problem,
+                    init_response,
+                    goal_response,
+                    init_cleanup_response,
+                    goal_cleanup_response,
+                ) = generate_pddl_problem(
+                    model_id,
+                    dataset_problem_dir,
+                    gt_domain,
+                    gt_problem,
+                    args.max_tokens,
+                    args.temperature,
+                    args.seed,
+                    args.quantization,
+                )
+                problem = normalize_problem(problem)
+                (output_problem_dir / "problem.pddl").write_text(problem)
+
+                # Save VLM responses for init and goal sections
+                (output_problem_dir / "init_response.txt").write_text(init_response)
+                (output_problem_dir / "goal_response.txt").write_text(goal_response)
+                (output_problem_dir / "init_cleanup_response.txt").write_text(
+                    init_cleanup_response
+                )
+                (output_problem_dir / "goal_cleanup_response.txt").write_text(
+                    goal_cleanup_response
+                )
+
+                # Solve the generated problem using Fast Downward
+                downward_success, downward_error_msg, plan = find_plan(
+                    gt_domain, problem, downward_dir
+                )
+                # If the plan generation attempt fails, re-prompt the VLM to try to fix the problem file
+                # Currently, only re-prompts once and only regenerates the init section
+                if not downward_success:
+                    (output_problem_dir / "downward_error.txt").write_text(
+                        downward_error_msg
+                    )
+
+                    # Re-prompt the VLM
+                    statistics_summary[dataset_problem_dir.name]["num_reprompts"] = 1
+                    (
+                        problem,
+                        init_response,
+                        init_cleanup_response,
+                    ) = regenerate_pddl_problem(
+                        model_id,
+                        dataset_problem_dir,
+                        gt_domain,
+                        problem,
+                        args.max_tokens,
+                        args.temperature,
+                        args.seed,
+                        args.quantization,
+                    )
+                    problem = normalize_problem(problem)
+                    (output_problem_dir / "problem_reprompted.pddl").write_text(problem)
+
+                    # Save the re-prompted VLM responses
+                    (output_problem_dir / "init_response_reprompted.txt").write_text(
+                        init_response
+                    )
+                    (
+                        output_problem_dir / "init_cleanup_response_reprompted.txt"
+                    ).write_text(init_cleanup_response)
+
+                    # Try Fast Downward again on the re-prompted problem
+                    downward_success, downward_error_msg, plan = find_plan(
+                        gt_domain, problem, downward_dir
+                    )
+
+                if not downward_success:
+                    # If it fails the re-prompting attempt
+                    statistics_summary[dataset_problem_dir.name]["downward_success"] = (
+                        False
+                    )
+                    (output_problem_dir / "downward_error_reprompted.txt").write_text(
+                        downward_error_msg
+                    )
+                    plan_success = False
+                else:
+                    # If the plan generation is successful, check if the plan was successful using UP
+                    plan = normalize_plan(plan)
+                    (output_problem_dir / "plan.txt").write_text(plan)
+
+                    plan_success, plan_error_msg = validate_plan(
+                        gt_domain_path, gt_problem_path, plan
+                    )
+                    statistics_summary[dataset_problem_dir.name]["plan_success"] = (
+                        plan_success
+                    )
+
+                # Determine whether the plan failed due to init or goal state (or both) for error analysis
+                if not plan_success:
+                    statistics_summary[dataset_problem_dir.name].update(
+                        compute_plan_success_with_ground_truth(
+                            gt_problem,
+                            problem,
+                            gt_domain,
+                            gt_domain_path,
+                            gt_problem_path,
+                            downward_dir,
+                        )
+                    )
+
+                # Record precision, recall, and F1 statistics
+                statistics_summary[dataset_problem_dir.name].update(
+                    compute_precision_recall_f1(gt_problem, problem)
+                )
+
+                # Save evaluation report
+                eval_report = get_eval_report_formalizer(statistics_summary)
+                with open(output_dir / "eval_report.json", "w") as f:
+                    json.dump(eval_report, f, indent=4)
 
     print(f"Evaluation report saved to: {(output_dir / 'eval_report.json').resolve()}")
     print(f"Experiment complete ({int((time() - timer_start) / 60) + 1} minutes).")

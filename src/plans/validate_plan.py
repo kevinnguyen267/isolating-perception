@@ -67,4 +67,4 @@ def validate_plan(
     with SequentialPlanValidator(problem_kind=problem.kind) as validator:
         result = validator.validate(problem, plan)
 
-    return result.status.name == "VALID", result.log_messages
+    return result.status.name == "VALID", [str(msg) for msg in result.log_messages]

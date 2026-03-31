@@ -94,7 +94,47 @@ def compute_plan_success_with_ground_truth(
     return result
 
 
-def get_eval_report(
+def get_eval_report_planner(
+    statistics_summary: dict,
+) -> dict:
+    """Generate an evaluation report summarizing the statistics for all problems."""
+    if not statistics_summary:
+        return {}
+
+    passed_problems = [
+        p for p in statistics_summary.values() if p.get("plan_success", False)
+    ]
+    failed_problems = [
+        p for p in statistics_summary.values() if not p.get("plan_success", False)
+    ]
+
+    num_problems = len(statistics_summary)
+    num_passed = len(passed_problems)
+    num_failed = len(failed_problems)
+
+    statistics_summary_avg = {
+        "plan_success_rate": num_passed / num_problems if num_problems > 0 else 0.0,
+        "num_problems": num_problems,
+        "num_plans_passed": num_passed,
+        "num_plans_failed": num_failed,
+        "problems_passed": [
+            name
+            for name, p in statistics_summary.items()
+            if p.get("plan_success", False)
+        ],
+        "problems_failed": [
+            name
+            for name, p in statistics_summary.items()
+            if not p.get("plan_success", False)
+        ],
+    }
+
+    return {
+        "average_statistics": statistics_summary_avg,
+    }
+
+
+def get_eval_report_formalizer(
     statistics_summary: dict,
 ) -> dict:
     """Generate an evaluation report summarizing the statistics for all problems."""
@@ -126,6 +166,15 @@ def get_eval_report(
     statistics_summary_avg = {
         "plan_success_rate": num_passed / num_problems if num_problems > 0 else 0.0,
         "num_problems": num_problems,
+        "num_plans_reprompted": sum(
+            p.get("downward_reprompted", False) or p.get("val_reprompted", False)
+            for p in statistics_summary.values()
+        ),
+        "num_plans_successfully_reprompted": sum(
+            (p.get("downward_reprompted", False) or p.get("val_reprompted", False))
+            and p.get("plan_success", False)
+            for p in statistics_summary.values()
+        ),
         "num_plans_passed": num_passed,
         "num_plans_failed": num_failed,
         "problems_failed": [
@@ -133,6 +182,13 @@ def get_eval_report(
             for name, p in statistics_summary.items()
             if not p.get("plan_success", False)
         ],
+        "num_plans_failed_due_to_downward": sum(
+            not p.get("downward_success", True) for p in failed_problems
+        ),
+        "num_plans_failed_due_to_val": sum(
+            not p.get("plan_success", True) and p.get("downward_success", True)
+            for p in failed_problems
+        ),
         "num_plans_failed_due_to_init": sum(
             p.get("plan_failed_due_to_init", False) for p in failed_problems
         ),
