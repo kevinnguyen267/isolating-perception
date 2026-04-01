@@ -48,7 +48,7 @@ def generate_response(
     """Generate a response using GPT (api_key) or local vLLM (base_url)."""
     messages = [{"role": "user", "content": user_content}]
 
-    if model_id == "gpt-5.4":
+    if model_id.startswith("gpt"):
         client = OpenAI()
 
         response = client.chat.completions.create(

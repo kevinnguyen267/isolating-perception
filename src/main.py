@@ -1,31 +1,16 @@
 import argparse
-import json
 import os
 from datetime import datetime
 from pathlib import Path
 from time import time
 
-from models.formalizer import generate_pddl_problem
-from models.formalizer_reprompt import regenerate_pddl_problem
-from models.planner import generate_plan
-from plans.find_plan import find_plan
-from plans.validate_plan import validate_plan
-from utils.helpers import get_gt_domain_and_problem, seed_everything
-from utils.parse import (
-    normalize_plan,
-    normalize_problem,
-)
-from utils.statistics import (
-    compute_plan_success_with_ground_truth,
-    compute_precision_recall_f1,
-    get_eval_report_formalizer,
-    get_eval_report_planner,
-)
+from pipelines import batch_formalizer, batch_planner, synchronous
+from utils.helpers import seed_everything
 
 MODEL_MAP = {
     "qwen3.5": "Qwen/Qwen3.5-122B-A10B",
     "qwen3": "Qwen/Qwen3-VL-235B-A22B-Instruct",
-    "gpt": "gpt-5.4",
+    "gpt": "gpt-5.4-2026-03-05",
 }
 
 
@@ -82,6 +67,12 @@ def parse_args():
         action="store_true",
         help="Whether to use quantized weights for local vLLM inference (if applicable)",
     )
+    parser.add_argument(
+        "--batch",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable (--batch) or disable (--no-batch) batch processing for GPT",
+    )
 
     return parser.parse_args()
 
@@ -92,7 +83,7 @@ def main():
     seed_everything(args.seed)
 
     # Validate API key for GPT (load_dotenv was already called by top-level code in utils/vlm.py)
-    if args.model_name == "gpt" and "OPENAI_API_KEY" not in os.environ:
+    if args.model_name.startswith("gpt") and "OPENAI_API_KEY" not in os.environ:
         raise EnvironmentError("OPENAI_API_KEY environment variable not set.")
 
     downward_dir = Path(args.fast_downward_dir)
@@ -102,7 +93,10 @@ def main():
         )
 
     model_id = MODEL_MAP[args.model_name]
-    print(f"Running {args.dataset} using {model_id}...")
+    use_batch = args.batch and args.model_name.startswith("gpt")
+
+    mode_label = f"{'batch_' if use_batch else 'seq_'}{args.mode}"
+    print(f"Running {args.dataset} using {model_id} ({mode_label})...")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = (
@@ -116,172 +110,13 @@ def main():
     if not dataset_dir.exists():
         raise FileNotFoundError(f"Dataset directory not found: {dataset_dir}")
 
-    # Iterate over all problem instances in the dataset directory (assumes subdirs for each problem)
-    statistics_summary = {}
-    for dataset_problem_dir in sorted(dataset_dir.iterdir()):
-        if dataset_problem_dir.is_dir():
-            print(f"  Processing {dataset_problem_dir.name}...")
-            statistics_summary[dataset_problem_dir.name] = {}
-
-            output_problem_dir = output_dir / "problems" / dataset_problem_dir.name
-            output_problem_dir.mkdir(parents=True, exist_ok=True)
-
-            # Add a symlink to the problem's data directory for reference
-            symlink_path = output_problem_dir / "source_data"
-            if not symlink_path.exists():
-                symlink_path.symlink_to(dataset_problem_dir.resolve())
-
-            # Get ground truth domain (unmodified) and problem (normalized) texts
-            gt_domain, gt_problem, gt_domain_path, gt_problem_path = (
-                get_gt_domain_and_problem(dataset_problem_dir, output_problem_dir)
-            )
-
-            if args.mode == "planner":
-                # Generate plan using VLM
-                plan, response = generate_plan(
-                    model_id,
-                    dataset_problem_dir,
-                    args.max_tokens,
-                    args.temperature,
-                    args.seed,
-                    args.quantization,
-                )
-                plan = normalize_plan(plan)
-                (output_problem_dir / "plan.txt").write_text(plan)
-
-                # Save VLM response
-                (output_problem_dir / "response.txt").write_text(response)
-
-                # Check if plan was successful using UP
-                plan_success, plan_error_msg = validate_plan(
-                    gt_domain_path, gt_problem_path, plan
-                )
-                statistics_summary[dataset_problem_dir.name]["plan_success"] = (
-                    plan_success
-                )
-
-                # Save evaluation report
-                eval_report = get_eval_report_planner(statistics_summary)
-                with open(output_dir / "eval_report.json", "w") as f:
-                    json.dump(eval_report, f, indent=4)
-
-            elif args.mode == "formalizer":
-                # Generate PDDL problem file using VLM
-                (
-                    problem,
-                    init_response,
-                    goal_response,
-                    init_cleanup_response,
-                    goal_cleanup_response,
-                ) = generate_pddl_problem(
-                    model_id,
-                    dataset_problem_dir,
-                    gt_domain,
-                    gt_problem,
-                    args.max_tokens,
-                    args.temperature,
-                    args.seed,
-                    args.quantization,
-                )
-                problem = normalize_problem(problem)
-                (output_problem_dir / "problem.pddl").write_text(problem)
-
-                # Save VLM responses for init and goal sections
-                (output_problem_dir / "init_response.txt").write_text(init_response)
-                (output_problem_dir / "goal_response.txt").write_text(goal_response)
-                (output_problem_dir / "init_cleanup_response.txt").write_text(
-                    init_cleanup_response
-                )
-                (output_problem_dir / "goal_cleanup_response.txt").write_text(
-                    goal_cleanup_response
-                )
-
-                # Solve the generated problem using Fast Downward
-                downward_success, downward_error_msg, plan = find_plan(
-                    gt_domain, problem, downward_dir
-                )
-                # If the plan generation attempt fails, re-prompt the VLM to try to fix the problem file
-                # Currently, only re-prompts once and only regenerates the init section
-                if not downward_success:
-                    (output_problem_dir / "downward_error.txt").write_text(
-                        downward_error_msg
-                    )
-
-                    # Re-prompt the VLM
-                    statistics_summary[dataset_problem_dir.name]["num_reprompts"] = 1
-                    (
-                        problem,
-                        init_response,
-                        init_cleanup_response,
-                    ) = regenerate_pddl_problem(
-                        model_id,
-                        dataset_problem_dir,
-                        gt_domain,
-                        problem,
-                        args.max_tokens,
-                        args.temperature,
-                        args.seed,
-                        args.quantization,
-                    )
-                    problem = normalize_problem(problem)
-                    (output_problem_dir / "problem_reprompted.pddl").write_text(problem)
-
-                    # Save the re-prompted VLM responses
-                    (output_problem_dir / "init_response_reprompted.txt").write_text(
-                        init_response
-                    )
-                    (
-                        output_problem_dir / "init_cleanup_response_reprompted.txt"
-                    ).write_text(init_cleanup_response)
-
-                    # Try Fast Downward again on the re-prompted problem
-                    downward_success, downward_error_msg, plan = find_plan(
-                        gt_domain, problem, downward_dir
-                    )
-
-                if not downward_success:
-                    # If it fails the re-prompting attempt
-                    statistics_summary[dataset_problem_dir.name]["downward_success"] = (
-                        False
-                    )
-                    (output_problem_dir / "downward_error_reprompted.txt").write_text(
-                        downward_error_msg
-                    )
-                    plan_success = False
-                else:
-                    # If the plan generation is successful, check if the plan was successful using UP
-                    plan = normalize_plan(plan)
-                    (output_problem_dir / "plan.txt").write_text(plan)
-
-                    plan_success, plan_error_msg = validate_plan(
-                        gt_domain_path, gt_problem_path, plan
-                    )
-                    statistics_summary[dataset_problem_dir.name]["plan_success"] = (
-                        plan_success
-                    )
-
-                # Determine whether the plan failed due to init or goal state (or both) for error analysis
-                if not plan_success:
-                    statistics_summary[dataset_problem_dir.name].update(
-                        compute_plan_success_with_ground_truth(
-                            gt_problem,
-                            problem,
-                            gt_domain,
-                            gt_domain_path,
-                            gt_problem_path,
-                            downward_dir,
-                        )
-                    )
-
-                # Record precision, recall, and F1 statistics
-                statistics_summary[dataset_problem_dir.name].update(
-                    compute_precision_recall_f1(gt_problem, problem)
-                )
-
-                # Save evaluation report
-                eval_report = get_eval_report_formalizer(statistics_summary)
-                with open(output_dir / "eval_report.json", "w") as f:
-                    json.dump(eval_report, f, indent=4)
+    if use_batch:
+        if args.mode == "planner":
+            batch_planner.main(args, model_id, output_dir, dataset_dir)
+        else:
+            batch_formalizer.main(args, model_id, output_dir, dataset_dir, downward_dir)
+    else:
+        synchronous.main(args, model_id, output_dir, dataset_dir, downward_dir)
 
     print(f"Evaluation report saved to: {(output_dir / 'eval_report.json').resolve()}")
     print(f"Experiment complete ({int((time() - timer_start) / 60) + 1} minutes).")

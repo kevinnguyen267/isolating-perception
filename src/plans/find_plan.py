@@ -1,7 +1,7 @@
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Tuple
 
 
 def _create_temp_files(
@@ -48,7 +48,7 @@ def _parse_cost(last_line: str) -> float:
     return float("inf")
 
 
-def _run_downward(command: str, plan_path: Path) -> Tuple[bool, Optional[str], str]:
+def _run_downward(command: str, plan_path: Path) -> Tuple[bool, str, str]:
     """
     Execute Fast Downward and return the best plan found.
 
@@ -88,12 +88,12 @@ def _run_downward(command: str, plan_path: Path) -> Tuple[bool, Optional[str], s
     if best_plan is None:
         return False, "No valid plan found in output files.", ""
 
-    return True, None, best_plan
+    return True, "", best_plan
 
 
 def find_plan(
     domain: str, problem: str, downward_dir: Path, time_limit: int = 20
-) -> Tuple[bool, Optional[str], str]:
+) -> Tuple[bool, str, str]:
     """
     Finds a plan using Fast Downward.
 

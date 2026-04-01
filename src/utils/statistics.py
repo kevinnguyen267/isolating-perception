@@ -153,25 +153,27 @@ def get_eval_report_formalizer(
     num_failed = len(failed_problems)
 
     def _compute_avg_metrics(probs):
-        n = len(probs) if len(probs) > 0 else 1
-        return {
-            key: {
-                "precision": sum(p[key]["precision"] for p in probs) / n,
-                "recall": sum(p[key]["recall"] for p in probs) / n,
-                "f1": sum(p[key]["f1"] for p in probs) / n,
+        avg_metrics = {}
+
+        for key in ("objects", "init", "goal"):
+            valid_probs = [p[key] for p in probs if key in p]
+            n = len(valid_probs) if len(valid_probs) > 0 else 1
+            avg_metrics[key] = {
+                "precision": sum(vp.get("precision", 0.0) for vp in valid_probs) / n,
+                "recall": sum(vp.get("recall", 0.0) for vp in valid_probs) / n,
+                "f1": sum(vp.get("f1", 0.0) for vp in valid_probs) / n,
             }
-            for key in ("objects", "init", "goal")
-        }
+
+        return avg_metrics
 
     statistics_summary_avg = {
         "plan_success_rate": num_passed / num_problems if num_problems > 0 else 0.0,
         "num_problems": num_problems,
         "num_plans_reprompted": sum(
-            p.get("downward_reprompted", False) or p.get("val_reprompted", False)
-            for p in statistics_summary.values()
+            p.get("num_reprompts", 0) > 0 for p in statistics_summary.values()
         ),
         "num_plans_successfully_reprompted": sum(
-            (p.get("downward_reprompted", False) or p.get("val_reprompted", False))
+            p.get("num_reprompts", 0) > 0
             and p.get("plan_success", False)
             for p in statistics_summary.values()
         ),
@@ -182,13 +184,6 @@ def get_eval_report_formalizer(
             for name, p in statistics_summary.items()
             if not p.get("plan_success", False)
         ],
-        "num_plans_failed_due_to_downward": sum(
-            not p.get("downward_success", True) for p in failed_problems
-        ),
-        "num_plans_failed_due_to_val": sum(
-            not p.get("plan_success", True) and p.get("downward_success", True)
-            for p in failed_problems
-        ),
         "num_plans_failed_due_to_init": sum(
             p.get("plan_failed_due_to_init", False) for p in failed_problems
         ),

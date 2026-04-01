@@ -39,17 +39,12 @@ def _build_prompt(
     ]
 
 
-def generate_plan(
-    model_id: str,
+def build_planner_prompt(
     dataset_problem_dir: Path,
-    max_tokens: int,
-    temperature: float,
-    seed: int,
-    quantization: bool,
-) -> tuple[str, str]:
-    """Generates a plan given context from the dataset.
+) -> List[dict]:
+    """Build the planner prompt.
 
-    Returns: (plan, response)
+    Returns: prompt (list of message content blocks)
     """
     # TODO: Placeholder: given objects for blocksworld_real
     objects = set(
@@ -152,13 +147,23 @@ def generate_plan(
         )""",
     }
 
-    # Build context for prompting VLM
-    prompt = _build_prompt(
-        objects,
-        actions,
-        image_paths,
-        instruction,
-    )
+    return _build_prompt(objects, actions, image_paths, instruction)
+
+
+def generate_plan(
+    model_id: str,
+    dataset_problem_dir: Path,
+    max_tokens: int,
+    temperature: float,
+    seed: int,
+    quantization: bool,
+) -> tuple[str, str]:
+    """Generates a plan given context from the dataset.
+
+    Returns: (plan, response)
+    """
+    # Build prompt
+    prompt = build_planner_prompt(dataset_problem_dir)
 
     # Prompt the VLM to generate a plan
     response = generate_response(

@@ -78,13 +78,13 @@ def _generate_grounded_preds(
     temperature: float,
     seed: int,
     quantization: bool,
-) -> tuple[set[str], str, str]:
-    """Generate grounded predicates from the provided context.
+) -> str:
+    """Prompts the VLM to generate grounded predicates from the provided context.
 
     If the context is a list of image paths, prompts the VLM to generate grounded predicates from the images.
     If the context is an instruction string, prompts the VLM to generate grounded predicates from the instruction.
 
-    Returns: (grounded_preds, VLM_response, VLM_response_extracted)
+    Returns: VLM response
     """
     # Build context for prompting VLM
     if isinstance(context, str):
@@ -93,7 +93,7 @@ def _generate_grounded_preds(
         prompt = _build_grounding_prompt_from_imgs(objects, predicates, context)
 
     # Prompt the VLM to generate grounded predicates
-    response = generate_response(
+    return generate_response(
         model_id,
         prompt,
         max_tokens,
@@ -101,24 +101,15 @@ def _generate_grounded_preds(
         seed,
         quantization,
     )
-    grounded_preds, grounded_preds_str = extract_output_from_response(response)
-
-    return (grounded_preds, response, grounded_preds_str)
 
 
-def generate_pddl_problem(
-    model_id: str,
+def _get_objects_and_predicates(
     dataset_problem_dir: Path,
     gt_domain: str,
-    gt_problem: str,
-    max_tokens: int,
-    temperature: float,
-    seed: int,
-    quantization: bool,
-) -> tuple[str, str, str, str, str]:
-    """Generates a PDDL problem file given context from the dataset.
+) -> tuple[set[str], set[str], List[Path], str]:
+    """Extract objects, predicates, image paths, and instruction from the dataset.
 
-    Returns: (problem, init_response, goal_response, init_response_extracted, goal_response_extracted)
+    Returns: (objects, predicates, image_paths, instruction)
     """
     # TODO: Placeholder: given objects for blocksworld_real
     objects = set(
@@ -161,27 +152,42 @@ def generate_pddl_problem(
             f"No instruction found in {dataset_problem_dir / 'instruction.txt'}"
         )
 
-    # Generate init and goal grounded predicates
-    init_preds, init_response, init_response_extracted = _generate_grounded_preds(
-        model_id,
-        image_paths,
-        objects,
-        predicates,
-        max_tokens,
-        temperature,
-        seed,
-        quantization,
+    return objects, predicates, image_paths, instruction
+
+
+def build_formalizer_prompts(
+    dataset_problem_dir: Path,
+    gt_domain: str,
+) -> tuple[List[dict], List[dict], set[str]]:
+    """Build prompts for the (image-based) and goal (instruction-based).
+
+    Returns: (init_prompt, goal_prompt, objects)
+    """
+    objects, predicates, image_paths, instruction = _get_objects_and_predicates(
+        dataset_problem_dir, gt_domain
     )
-    goal_preds, goal_response, goal_response_extracted = _generate_grounded_preds(
-        model_id,
-        instruction,
-        objects,
-        predicates,
-        max_tokens,
-        temperature,
-        seed,
-        quantization,
+
+    init_prompt = _build_grounding_prompt_from_imgs(objects, predicates, image_paths)
+    goal_prompt = _build_grounding_prompt_from_instruction(
+        objects, predicates, instruction
     )
+
+    return init_prompt, goal_prompt, objects
+
+
+def assemble_pddl_problem(
+    init_response: str,
+    goal_response: str,
+    objects: set[str],
+    gt_domain: str,
+    gt_problem: str,
+) -> tuple[str, str, str, str, str]:
+    """Assemble a PDDL problem from pre-obtained VLM responses.
+
+    Returns: (problem, init_response, goal_response, init_response_extracted, goal_response_extracted)
+    """
+    init_preds, init_response_extracted = extract_output_from_response(init_response)
+    goal_preds, goal_response_extracted = extract_output_from_response(goal_response)
 
     # Extract domain name from the ground truth domain file
     match = re.search(r"\(domain\s+(\w+)\)", gt_domain)
@@ -212,4 +218,55 @@ def generate_pddl_problem(
         goal_response,
         init_response_extracted,
         goal_response_extracted,
+    )
+
+
+def generate_pddl_problem(
+    model_id: str,
+    dataset_problem_dir: Path,
+    gt_domain: str,
+    gt_problem: str,
+    max_tokens: int,
+    temperature: float,
+    seed: int,
+    quantization: bool,
+) -> tuple[str, str, str, str, str]:
+    """Generates a PDDL problem file given context from the dataset.
+
+    Returns: (problem, init_response, goal_response, init_response_extracted, goal_response_extracted)
+    """
+    # Build context for prompting VLM
+    objects, predicates, image_paths, instruction = _get_objects_and_predicates(
+        dataset_problem_dir, gt_domain
+    )
+
+    # Prompt VLM to generate grounded predicates for the init and goal sections
+    init_response = _generate_grounded_preds(
+        model_id,
+        image_paths,
+        objects,
+        predicates,
+        max_tokens,
+        temperature,
+        seed,
+        quantization,
+    )
+    goal_response = _generate_grounded_preds(
+        model_id,
+        instruction,
+        objects,
+        predicates,
+        max_tokens,
+        temperature,
+        seed,
+        quantization,
+    )
+    
+    # Assemble problem using the generated predicates
+    return assemble_pddl_problem(
+        init_response,
+        goal_response,
+        objects,
+        gt_domain,
+        gt_problem,
     )

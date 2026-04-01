@@ -45,3 +45,33 @@ def get_gt_domain_and_problem(
     output_problem_path.write_text(normalized_problem)
 
     return domain, normalized_problem, domain_path, output_problem_path
+
+
+def setup_problem(
+    dataset_problem_dir: Path,
+    output_dir: Path,
+):
+    name = dataset_problem_dir.name
+
+    # Set up output directory for the problem
+    output_problem_dir = output_dir / "problems" / name
+    output_problem_dir.mkdir(parents=True, exist_ok=True)
+
+    # Add a symlink to the problem's data directory for reference
+    symlink_path = output_problem_dir / "source_data"
+    if not symlink_path.exists():
+        symlink_path.symlink_to(dataset_problem_dir.resolve())
+
+    # Get ground truth domain (unmodified) and problem (normalized) texts
+    gt_domain, gt_problem, gt_domain_path, gt_problem_path = get_gt_domain_and_problem(
+        dataset_problem_dir, output_problem_dir
+    )
+
+    return (
+        name,
+        output_problem_dir,
+        gt_domain,
+        gt_problem,
+        gt_domain_path,
+        gt_problem_path,
+    )

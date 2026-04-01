@@ -182,22 +182,22 @@ def normalize_plan(plan_text: str) -> str:
     return "\n".join(normalized_lines)
 
 
-def extract_output_from_response(response: str) -> tuple[set[str], str]:
+def extract_output_from_response(response: str) -> tuple[list[str], str]:
     """Extract the lines within the last code block of the response.
     Each line is formatted as '(<token0> <token1> <token2> ...)'.
     For output_str, the lines are joined with newlines.
 
-    Returns: (output_set, output_str)"""
-    output = set()
-    
+    Returns: (output_lst, output_str)"""
+    output = []
+
     match = re.findall(r"```(?:\w+)?\n(.*?)```", response, re.DOTALL)
     if match:
         lines = match[-1].strip().splitlines()
         for line in lines:
             tokens = line.replace("(", " ").replace(")", " ").replace(",", " ").split()
             if tokens:
-                output.add(f"({' '.join(tokens)})")
+                output.append(f"({' '.join(tokens)})")
 
     output_str = "\n".join(output)
-    
+
     return output, output_str
