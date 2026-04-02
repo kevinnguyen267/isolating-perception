@@ -74,7 +74,6 @@ def solve_by_formalization(
             args.max_tokens,
             args.temperature,
             args.seed,
-            args.quantization,
         )
         problem = normalize_problem(problem)
         (output_problem_dir / "problem_reprompted.pddl").write_text(problem)
@@ -155,7 +154,6 @@ def main(args, model_id, output_dir, dataset_dir, downward_dir):
                 args.max_tokens,
                 args.temperature,
                 args.seed,
-                args.quantization,
             )
             plan = normalize_plan(plan)
             (output_problem_dir / "plan.txt").write_text(plan)
@@ -190,7 +188,6 @@ def main(args, model_id, output_dir, dataset_dir, downward_dir):
                 args.max_tokens,
                 args.temperature,
                 args.seed,
-                args.quantization,
             )
 
             # Run helper function to solve the problem, validate the plan, compute statistics, and save all relevant files for error analysis

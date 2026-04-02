@@ -126,8 +126,8 @@ def create_problem_from_sections(
     prob_name: str,
     domain_name: str,
     objects: set[str],
-    init: set[str],
-    goal: set[str],
+    init: set[str] | list[str],
+    goal: set[str] | list[str],
 ) -> str:
     """Create a problem string from the given sections."""
     # Group objects by type: "(name - type)" -> {type: [name, ...]}

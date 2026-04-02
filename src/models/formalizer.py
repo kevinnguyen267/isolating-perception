@@ -77,7 +77,6 @@ def _generate_grounded_preds(
     max_tokens: int,
     temperature: float,
     seed: int,
-    quantization: bool,
 ) -> str:
     """Prompts the VLM to generate grounded predicates from the provided context.
 
@@ -99,7 +98,6 @@ def _generate_grounded_preds(
         max_tokens,
         temperature,
         seed,
-        quantization,
     )
 
 
@@ -229,7 +227,6 @@ def generate_pddl_problem(
     max_tokens: int,
     temperature: float,
     seed: int,
-    quantization: bool,
 ) -> tuple[str, str, str, str, str]:
     """Generates a PDDL problem file given context from the dataset.
 
@@ -249,7 +246,6 @@ def generate_pddl_problem(
         max_tokens,
         temperature,
         seed,
-        quantization,
     )
     goal_response = _generate_grounded_preds(
         model_id,
@@ -259,7 +255,6 @@ def generate_pddl_problem(
         max_tokens,
         temperature,
         seed,
-        quantization,
     )
     
     # Assemble problem using the generated predicates

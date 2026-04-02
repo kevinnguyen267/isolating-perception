@@ -57,7 +57,7 @@ def main(args, model_id, output_dir, dataset_dir):
     print(f"Submitting batch ({len(batch_requests)} requests)...")
     batch_file = output_dir / "batch_input_planner.jsonl"
     results = run_batch(
-        batch_requests, batch_file, description=f"planner_{args.dataset}"
+        model_id, batch_requests, batch_file, description=f"planner_{args.dataset}"
     )
 
     # Process results, validate plans, and compile statistics

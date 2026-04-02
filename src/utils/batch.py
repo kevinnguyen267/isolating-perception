@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List
 
 from openai import OpenAI
+from utils.vlm import get_client
 
 
 def build_batch_request(
@@ -138,6 +139,7 @@ def _download_and_parse_results(
 
 
 def run_batch(
+    model_id: str,
     requests: List[dict],
     batch_file_path: Path,
     description: str = "",
@@ -148,7 +150,7 @@ def run_batch(
 
     Returns {custom_id: response_text}.
     """
-    client = OpenAI()
+    client = get_client(model_id)
 
     _write_batch_file(requests, batch_file_path)
     batch_id = _submit_batch(client, batch_file_path, description)

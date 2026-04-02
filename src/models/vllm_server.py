@@ -1,31 +1,13 @@
 import json
+import os
 import shutil
+import signal
 import subprocess
 import time
 import urllib.request
 from pathlib import Path
 
-import torch
-
-VLLM_SERVE_CONFIG = {
-    "Qwen/Qwen3.5-122B-A10B": {
-        "tp_size": torch.cuda.device_count(),
-        "expert_parallel": True,
-        "max_model_len": 262144,
-        "reasoning_parser": "qwen3",
-        "gpu_memory_utilization": 0.9,
-        "mm_encoder_tp_mode": "data",
-        "quantization": "fp8",
-    },
-    "Qwen/Qwen3-VL-235B-A22B-Instruct": {
-        "tp_size": torch.cuda.device_count(),
-        "expert_parallel": True,
-        "max_model_len": 8192,
-        "gpu_memory_utilization": 0.9,
-        "mm_encoder_tp_mode": "data",
-        "quantization": "fp8",
-    },
-}
+from models.config import MODEL_CONFIG, VLLM_PORT
 
 
 def _vllm_health_ok(port: int, timeout: float = 3.0) -> bool:
@@ -38,23 +20,23 @@ def _vllm_health_ok(port: int, timeout: float = 3.0) -> bool:
         return False
 
 
-def _vllm_model_matches(model_id: str, port: int) -> bool:
+def _vllm_model_matches(model_name: str, port: int) -> bool:
     """Return True if the running vLLM server is serving *model_id*."""
     try:
         req = urllib.request.Request(f"http://localhost:{port}/v1/models", method="GET")
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode())
             served = [m["id"] for m in data.get("data", [])]
-            return model_id in served
+            return MODEL_CONFIG[model_name]["model_id"] in served
     except Exception:
         return False
 
 
-def _launch_vllm_server(model_id: str, port: int, quantization: bool) -> None:
+def _launch_vllm_server(model_name: str, port: int) -> None:
     """Launch a vLLM server for *model_id* and block until it is healthy."""
-    if model_id not in VLLM_SERVE_CONFIG:
-        raise ValueError(f"Model {model_id} is not configured for vLLM serving.")
-    cfg = VLLM_SERVE_CONFIG[model_id]
+    cfg = MODEL_CONFIG[model_name]
+    if "vllm_serve_args" not in cfg:
+        raise ValueError(f"Model {model_name} is not configured for vLLM serving.")
 
     vllm_bin = shutil.which("vllm")
     if vllm_bin is None:
@@ -63,27 +45,14 @@ def _launch_vllm_server(model_id: str, port: int, quantization: bool) -> None:
     cmd = [
         vllm_bin,
         "serve",
-        model_id,
-        "--tensor-parallel-size",
-        str(cfg["tp_size"]),
+        cfg["model_id"],
         "--port",
         str(port),
-        "--max-model-len",
-        str(cfg["max_model_len"]),
-        "--gpu-memory-utilization",
-        str(cfg["gpu_memory_utilization"]),
     ]
-    if cfg.get("expert_parallel"):
-        cmd.append("--enable-expert-parallel")
-    if cfg.get("mm_encoder_tp_mode"):
-        cmd.extend(["--mm-encoder-tp-mode", cfg["mm_encoder_tp_mode"]])
-    if cfg.get("reasoning_parser"):
-        cmd.extend(["--reasoning-parser", cfg["reasoning_parser"]])
-    if quantization and cfg.get("quantization"):
-        cmd.extend(["--quantization", cfg["quantization"]])
+    cmd.extend(cfg["vllm_serve_args"])
 
     print(f"Launching vLLM server: {' '.join(cmd)}")
-    log_path = Path(f"logs/vllm_{model_id.replace('/', '_')}.log")
+    log_path = Path(f"logs/vllm_{cfg['model_id'].replace('/', '_')}.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "w") as log_file:
         proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
@@ -98,6 +67,10 @@ def _launch_vllm_server(model_id: str, port: int, quantization: bool) -> None:
     while waited < max_wait:
         time.sleep(interval)
         waited += interval
+        if proc.poll() is not None:
+            raise RuntimeError(
+                f"vLLM exited with code {proc.returncode}. Check {log_path.resolve()}"
+            )
         if _vllm_health_ok(port):
             print(f" ready! ({waited}s)")
             return
@@ -105,18 +78,32 @@ def _launch_vllm_server(model_id: str, port: int, quantization: bool) -> None:
             print(f" {waited}s...", end="", flush=True)
 
     raise RuntimeError(
-        f"vLLM server did not become healthy within {max_wait}s. "
-        f"Check logs at {log_path.resolve()} for details."
+        f"vLLM server did not become healthy within {max_wait}s. Check logs at {log_path.resolve()} for details."
     )
 
 
-def ensure_vllm_server(model_id: str, port: int, quantization: bool) -> None:
+def ensure_vllm_server(model_name: str, port: int = VLLM_PORT) -> None:
     """Ensure a vLLM server is running for *model_id*, else launch one."""
     if _vllm_health_ok(port):
-        if _vllm_model_matches(model_id, port):
+        if _vllm_model_matches(model_name, port):
             return
         raise RuntimeError(
             f"A vLLM server is running on port {port} but serving a different model. "
             f"Stop it first or use a different VLLM_PORT."
         )
-    _launch_vllm_server(model_id, port, quantization)
+    _launch_vllm_server(model_name, port)
+
+
+def kill_vllm_server() -> None:
+    """Kill any running vLLM server started by this script (identified by PID files in logs/)."""
+    logs_dir = Path("logs")
+    for pid_path in logs_dir.glob("vllm_*.pid"):
+        pid = int(pid_path.read_text().strip())
+        try:
+            os.kill(pid, signal.SIGTERM)
+            print(f"Sent SIGTERM to vLLM server (PID {pid}).")
+        except ProcessLookupError:
+            print(f"Process {pid} not found. Server already stopped.")
+        finally:
+            pid_path.unlink(missing_ok=True)
+            pid_path.with_suffix(".log").unlink(missing_ok=True)

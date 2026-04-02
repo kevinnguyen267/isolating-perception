@@ -156,7 +156,6 @@ def generate_plan(
     max_tokens: int,
     temperature: float,
     seed: int,
-    quantization: bool,
 ) -> tuple[str, str]:
     """Generates a plan given context from the dataset.
 
@@ -172,7 +171,6 @@ def generate_plan(
         max_tokens,
         temperature,
         seed,
-        quantization,
     )
     _, plan_str = extract_output_from_response(response)
 

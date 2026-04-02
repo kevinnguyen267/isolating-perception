@@ -56,7 +56,6 @@ def regenerate_pddl_problem(
     max_tokens: int,
     temperature: float,
     seed: int,
-    quantization: bool,
 ) -> tuple[str, str, str]:
     """Regenerates the init section of the PDDL problem using the VLM, while keeping the objects and goal predicates fixed.
 
@@ -90,7 +89,6 @@ def regenerate_pddl_problem(
         max_tokens,
         temperature,
         seed,
-        quantization,
     )
     regen_init_preds, regen_init_preds_str = extract_output_from_response(init_response)
 

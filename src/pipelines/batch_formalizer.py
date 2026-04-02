@@ -70,7 +70,7 @@ def main(args, model_id, output_dir, dataset_dir, downward_dir):
     print(f"Submitting batch ({len(batch_requests)} requests)...")
     batch_file = output_dir / "batch_input_formalizer.jsonl"
     results = run_batch(
-        batch_requests, batch_file, description=f"formalizer_{args.dataset}"
+        model_id, batch_requests, batch_file, description=f"formalizer_{args.dataset}"
     )
 
     # Process results, run Fast Downward, reprompt failures

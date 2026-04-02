@@ -1,15 +1,10 @@
 import base64
-import os
 from pathlib import Path
 from typing import List
 
-from dotenv import load_dotenv
-from models.vllm_server import ensure_vllm_server
+from models.config import VLLM_BASE_URL
 from openai import OpenAI
-
-load_dotenv()
-VLLM_PORT = int(os.getenv("VLLM_PORT", "15100"))
-VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", f"http://localhost:{VLLM_PORT}/v1")
+from openai.types.chat import ChatCompletion
 
 
 def _guess_mime_type(image_path: Path) -> str:
@@ -37,53 +32,97 @@ def image_block(path: Path) -> dict:
     }
 
 
+def get_client(model_id: str):
+    """Return an OpenAI client configured for the specified model."""
+    return (
+        OpenAI()
+        if model_id.startswith("gpt")
+        else OpenAI(api_key="EMPTY", base_url=VLLM_BASE_URL)
+    )
+
+
+def create_completion(
+    client: OpenAI,
+    model_id: str,
+    messages: list,
+    max_tokens: int,
+    temperature: float,
+    seed: int,
+) -> ChatCompletion:
+    """Create a chat completion using the appropriate client for the model."""
+    if model_id.startswith("gpt"):
+        return client.chat.completions.create(
+            model=model_id,
+            messages=messages,
+            max_completion_tokens=max_tokens,
+            temperature=temperature,
+            seed=seed,
+        )
+    elif model_id == "Qwen/Qwen3.5-122B-A10B":
+        # Recommended parameters for "thinking mode for general tasks" /
+        # "non-thinking mode for reasoning tasks" from HF
+        return client.chat.completions.create(
+            model=model_id,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=1.0,
+            top_p=0.95,
+            presence_penalty=1.5,
+            seed=seed,
+            extra_body={
+                "top_k": 20,
+                "min_p": 0.0,
+                "repetition_penalty": 1.0,
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+        )
+    else:
+        return client.chat.completions.create(
+            model=model_id,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            seed=seed,
+        )
+
+
 def generate_response(
     model_id: str,
     user_content: List[dict],
     max_tokens: int,
     temperature: float,
     seed: int,
-    quantization: bool,
 ) -> str:
     """Generate a response using GPT (api_key) or local vLLM (base_url)."""
+    client = get_client(model_id)
+
     messages = [{"role": "user", "content": user_content}]
+    response = create_completion(
+        client, model_id, messages, max_tokens, temperature, seed
+    )
 
-    if model_id.startswith("gpt"):
-        client = OpenAI()
-
-        response = client.chat.completions.create(
-            model=model_id,
-            messages=messages,  # type: ignore
-            max_completion_tokens=max_tokens,
-            temperature=temperature,
-            seed=seed,
+    if response.usage:
+        print(f"    User content: {user_content}...")
+        print(
+            "    Usage - "
+            f"Prompt: {response.usage.prompt_tokens}, "
+            f"Completion: {response.usage.completion_tokens}, "
+            f"Total: {response.usage.total_tokens}"
         )
-    else:
-        ensure_vllm_server(model_id, VLLM_PORT, quantization)
-        client = OpenAI(api_key="EMPTY", base_url=VLLM_BASE_URL)
 
-        if model_id == "Qwen/Qwen3.5-122B-A10B":
-            response = client.chat.completions.create(
-                model=model_id,
-                messages=messages,  # type: ignore
-                max_tokens=max_tokens,
-                temperature=0.6,
-                top_p=0.95,
-                presence_penalty=0.0,
-                seed=seed,
-                extra_body={
-                    "top_k": 20,
-                    "min_p": 0.0,
-                    "repetition_penalty": 1.0,
-                },
-            )
-        else:
-            response = client.chat.completions.create(
-                model=model_id,
-                messages=messages,  # type: ignore
-                max_tokens=max_tokens,
-                temperature=temperature,
-                seed=seed,
-            )
+    message = response.choices[0].message
+    thinking = getattr(message, "reasoning", None) or ""
+    content = message.content or ""
 
-    return response.choices[0].message.content or ""
+    return (
+        "=" * 80
+        + "\nTHINKING:\n"
+        + "=" * 80
+        + f"\n{thinking}\n\n"
+        + "=" * 80
+        + "\nRESPONSE:\n"
+        + "=" * 80
+        + f"\n{content}"
+        if thinking
+        else content
+    )
