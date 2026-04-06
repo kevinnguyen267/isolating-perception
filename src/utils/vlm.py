@@ -41,7 +41,7 @@ def get_client(model_id: str):
     )
 
 
-def create_completion(
+def _create_completion(
     client: OpenAI,
     model_id: str,
     messages: list,
@@ -97,12 +97,12 @@ def generate_response(
     client = get_client(model_id)
 
     messages = [{"role": "user", "content": user_content}]
-    response = create_completion(
+    response = _create_completion(
         client, model_id, messages, max_tokens, temperature, seed
     )
 
     if response.usage:
-        print(f"    User content: {user_content}...")
+        # print(f"    User content: {user_content}...")
         print(
             "    Usage - "
             f"Prompt: {response.usage.prompt_tokens}, "

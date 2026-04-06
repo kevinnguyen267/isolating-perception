@@ -10,7 +10,7 @@ from utils.vlm import get_client
 def build_batch_request(
     custom_id: str,
     model_id: str,
-    user_content: List[dict],
+    user_content: dict | List[dict] | List[List[dict]],
     max_tokens: int,
     temperature: float,
     seed: int,

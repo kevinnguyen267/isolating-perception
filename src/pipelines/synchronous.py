@@ -1,7 +1,16 @@
 import json
 from pathlib import Path
 
-from models.formalizer import generate_pddl_problem
+from models.formalizer import (
+    assemble_pddl_problem,
+    build_grounding_prompt_from_instruction,
+    build_grounding_prompt_img,
+    build_grounding_prompt_imgs,
+    build_merge_grounded_prompt,
+    build_merge_scene_graph_prompt,
+    build_scene_graph_prompt_img,
+    extract_dataset_info,
+)
 from models.formalizer_reprompt import regenerate_pddl_problem
 from models.planner import generate_plan
 from plans.find_plan import find_plan
@@ -17,6 +26,7 @@ from utils.statistics import (
     get_eval_report_formalizer,
     get_eval_report_planner,
 )
+from utils.vlm import generate_response
 
 
 def solve_by_formalization(
@@ -34,6 +44,7 @@ def solve_by_formalization(
     goal_response: str,
     init_cleanup_response: str,
     goal_cleanup_response: str,
+    per_image_responses: list[str] | None,
     statistics_summary: dict[str, dict],
     output_dir: Path,
     output_problem_dir: Path,
@@ -50,44 +61,47 @@ def solve_by_formalization(
     (output_problem_dir / "goal_response.txt").write_text(goal_response)
     (output_problem_dir / "init_cleanup_response.txt").write_text(init_cleanup_response)
     (output_problem_dir / "goal_cleanup_response.txt").write_text(goal_cleanup_response)
+    if per_image_responses:
+        for i, resp in enumerate(per_image_responses):
+            (output_problem_dir / f"init_response_img{i}.txt").write_text(resp)
 
     # Solve the generated problem using Fast Downward
     downward_success, downward_error_msg, plan = find_plan(
         gt_domain, problem, downward_dir
     )
-    # If the plan generation attempt fails, re-prompt the VLM to try to fix the problem file
-    # Currently, only re-prompts once and only regenerates the init section
-    if not downward_success:
-        (output_problem_dir / "downward_error.txt").write_text(downward_error_msg)
+    # # If the plan generation attempt fails, re-prompt the VLM to try to fix the problem file
+    # # Currently, only re-prompts once and only regenerates the init section
+    # if not downward_success:
+    #     (output_problem_dir / "downward_error.txt").write_text(downward_error_msg)
 
-        # Re-prompt the VLM
-        statistics_summary[name]["num_reprompts"] = 1
-        (
-            problem,
-            init_response,
-            init_cleanup_response,
-        ) = regenerate_pddl_problem(
-            model_id,
-            dataset_problem_dir,
-            gt_domain,
-            problem,
-            args.max_tokens,
-            args.temperature,
-            args.seed,
-        )
-        problem = normalize_problem(problem)
-        (output_problem_dir / "problem_reprompted.pddl").write_text(problem)
+    #     # Re-prompt the VLM
+    #     statistics_summary[name]["num_reprompts"] = 1
+    #     (
+    #         problem,
+    #         init_response,
+    #         init_cleanup_response,
+    #     ) = regenerate_pddl_problem(
+    #         model_id,
+    #         dataset_problem_dir,
+    #         gt_domain,
+    #         problem,
+    #         args.max_tokens,
+    #         args.temperature,
+    #         args.seed,
+    #     )
+    #     problem = normalize_problem(problem)
+    #     (output_problem_dir / "problem_reprompted.pddl").write_text(problem)
 
-        # Save the re-prompted VLM responses
-        (output_problem_dir / "init_response_reprompted.txt").write_text(init_response)
-        (output_problem_dir / "init_cleanup_response_reprompted.txt").write_text(
-            init_cleanup_response
-        )
+    #     # Save the re-prompted VLM responses
+    #     (output_problem_dir / "init_response_reprompted.txt").write_text(init_response)
+    #     (output_problem_dir / "init_cleanup_response_reprompted.txt").write_text(
+    #         init_cleanup_response
+    #     )
 
-        # Try Fast Downward again on the re-prompted problem
-        downward_success, downward_error_msg, plan = find_plan(
-            gt_domain, problem, downward_dir
-        )
+    #     # Try Fast Downward again on the re-prompted problem
+    #     downward_success, downward_error_msg, plan = find_plan(
+    #         gt_domain, problem, downward_dir
+    #     )
 
     if not downward_success:
         # If it fails the re-prompting attempt
@@ -174,20 +188,94 @@ def main(args, model_id, output_dir, dataset_dir, downward_dir):
 
         elif args.mode == "formalizer":
             # Generate PDDL problem file using VLM
+            objects, predicates, image_paths, instruction = extract_dataset_info(
+                dataset_problem_dir, gt_domain
+            )
+
+            # Intermediate representation only affects the init prompt
+            goal_prompt = build_grounding_prompt_from_instruction(
+                objects, predicates, instruction
+            )
+            goal_response = generate_response(
+                model_id,
+                goal_prompt,
+                args.max_tokens,
+                args.temperature,
+                args.seed,
+            )
+
+            # Build different prompts depending on intermediate representation choice
+            # Then generate init response(s) and potentially merge response if using intermediate representation
+            if args.intermediate == "none":
+                if len(image_paths) == 1:
+                    init_prompt = build_grounding_prompt_img(
+                        objects, predicates, image_paths[0]
+                    )
+                else:
+                    init_prompt = build_grounding_prompt_imgs(
+                        objects, predicates, image_paths
+                    )
+                init_response = generate_response(
+                    model_id,
+                    init_prompt,
+                    args.max_tokens,
+                    args.temperature,
+                    args.seed,
+                )
+                per_image_init_responses = (
+                    None  # Used for intermediate representation bookkeeping
+                )
+            else:
+                if args.intermediate == "scene_graph":
+                    per_image_prompts = [
+                        build_scene_graph_prompt_img(objects, predicates, img_path)
+                        for img_path in image_paths
+                    ]
+                elif args.intermediate == "pddl":
+                    per_image_prompts = [
+                        build_grounding_prompt_img(objects, predicates, img_path)
+                        for img_path in image_paths
+                    ]
+                else:
+                    raise ValueError(
+                        f"Invalid intermediate representation: {args.intermediate}"
+                    )
+
+                per_image_init_responses = [
+                    generate_response(
+                        model_id,
+                        init_prompt,
+                        args.max_tokens,
+                        args.temperature,
+                        args.seed,
+                    )
+                    for init_prompt in per_image_prompts
+                ]
+                if args.intermediate == "scene_graph":
+                    merge_prompt = build_merge_scene_graph_prompt(
+                        objects, predicates, per_image_init_responses
+                    )
+                elif args.intermediate == "pddl":
+                    merge_prompt = build_merge_grounded_prompt(
+                        objects, predicates, per_image_init_responses
+                    )
+                init_response = generate_response(
+                    model_id,
+                    merge_prompt,  # type: ignore
+                    args.max_tokens,
+                    args.temperature,
+                    args.seed,
+                )
+
+            # Assemble problem using the generated predicates
             (
                 problem,
                 init_response,
                 goal_response,
                 init_cleanup_response,
                 goal_cleanup_response,
-            ) = generate_pddl_problem(
-                model_id,
-                dataset_problem_dir,
-                gt_domain,
-                gt_problem,
-                args.max_tokens,
-                args.temperature,
-                args.seed,
+            ) = assemble_pddl_problem(
+                init_response, goal_response, objects, gt_domain, gt_problem
             )
 
             # Run helper function to solve the problem, validate the plan, compute statistics, and save all relevant files for error analysis
@@ -206,6 +294,7 @@ def main(args, model_id, output_dir, dataset_dir, downward_dir):
                 goal_response,
                 init_cleanup_response,
                 goal_cleanup_response,
+                per_image_init_responses,
                 statistics_summary,
                 output_dir,
                 output_problem_dir,

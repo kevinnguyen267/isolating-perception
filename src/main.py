@@ -35,6 +35,13 @@ def parse_args():
         help="Mode of operation",
     )
     parser.add_argument(
+        "--intermediate",
+        type=str,
+        choices=["none", "scene_graph", "pddl"],
+        default="none",
+        help="Generate an intermediate representation for formalization",
+    )
+    parser.add_argument(
         "--fast_downward_dir",
         type=str,
         default="downward",
@@ -43,7 +50,7 @@ def parse_args():
     parser.add_argument(
         "--max_tokens",
         type=int,
-        default=2048,
+        default=8192,
         help="Maximum number of tokens to generate",
     )
     parser.add_argument(
@@ -61,7 +68,7 @@ def parse_args():
     parser.add_argument(
         "--terminate_server",
         action="store_true",
-        help="Terminate the vLLM server after the experiment",
+        help="Terminate the vLLM server (do not run any experiments)",
     )
     parser.add_argument(
         "--seed",
@@ -77,6 +84,10 @@ def main():
     timer_start = time()
     args = parse_args()
     seed_everything(args.seed)
+
+    if args.terminate_server:
+        kill_vllm_server()
+        return
 
     # Validate Fast Downward directory
     downward_dir = Path(args.fast_downward_dir)
@@ -121,9 +132,6 @@ def main():
 
     print(f"Evaluation report saved to: {(output_dir / 'eval_report.json').resolve()}")
     print(f"Experiment complete ({int((time() - timer_start) / 60) + 1} minutes).")
-
-    if args.terminate_server and "vllm_serve_args" in MODEL_CONFIG[args.model_name]:
-        kill_vllm_server()
 
 
 if __name__ == "__main__":

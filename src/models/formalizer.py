@@ -7,101 +7,10 @@ from utils.parse import (
     extract_output_from_response,
     parse_section,
 )
-from utils.vlm import generate_response, image_block
+from utils.vlm import image_block
 
 
-def _build_grounding_prompt_from_imgs(
-    objects: set[str],
-    predicates: set[str],
-    image_paths: List[Path],
-) -> List[dict]:
-    """Builds a prompt to generate grounded predicates from the images, given the set of objects and predicates."""
-    return [
-        {
-            "type": "text",
-            "text": (
-                "You are given a scene, a set of objects, and a set of predicates.\n"
-                "Describe the objects, their positions, and their spatial relationships.\n\n"
-                "Every object exists exactly once and is visible. If your analysis contradicts this statement, re-examine the scene and pay closer attention to the object(s) contributing to the contradiction.\n\n"
-                "Hints:\n"
-                "If no robot arm or gripper is visible in the image, assume the gripper is empty and not holding any object.\n"
-                "The predicate (on ?x - block ?y - block) is defined as block x is on block y."
-            ),
-        },
-        *(image_block(p) for p in image_paths),
-        {
-            "type": "text",
-            "text": (
-                f"Objects:\n{', '.join(sorted(objects))}\n\n"
-                f"Predicates:\n{', '.join(sorted(predicates))}\n\n"
-            ),
-        },
-        {
-            "type": "text",
-            "text": "First, complete your detailed analysis. Then, determine the true grounded predicates and list them enclosed in triple backticks in the format (predicate arg1 arg2 ...).",
-        },
-    ]
-
-
-def _build_grounding_prompt_from_instruction(
-    objects: set[str],
-    predicates: set[str],
-    instruction: str,
-) -> List[dict]:
-    """Builds a prompt to generate grounded predicates from the instruction, given the set of objects and predicates."""
-    return [
-        {
-            "type": "text",
-            "text": (
-                "Given an instruction, a set of objects, and a set of predicates, determine the true grounded predicates.\n\n"
-                "Hints:\n"
-                "If no robot arm or gripper is mentioned in the instruction, assume the gripper is empty and not holding any object.\n"
-                "The predicate (on ?x - block ?y - block) is defined as block x is on block y."
-                f"Instruction:\n{instruction}\n\n"
-                f"Objects:\n{', '.join(sorted(objects))}\n\n"
-                f"Predicates:\n{', '.join(sorted(predicates))}"
-            ),
-        },
-        {
-            "type": "text",
-            "text": "After determining the true grounded predicates, list them enclosed in triple backticks in the format (predicate arg1 arg2 ...).",
-        },
-    ]
-
-
-def _generate_grounded_preds(
-    model_id: str,
-    context: List[Path] | str,
-    objects: set[str],
-    predicates: set[str],
-    max_tokens: int,
-    temperature: float,
-    seed: int,
-) -> str:
-    """Prompts the VLM to generate grounded predicates from the provided context.
-
-    If the context is a list of image paths, prompts the VLM to generate grounded predicates from the images.
-    If the context is an instruction string, prompts the VLM to generate grounded predicates from the instruction.
-
-    Returns: VLM response
-    """
-    # Build context for prompting VLM
-    if isinstance(context, str):
-        prompt = _build_grounding_prompt_from_instruction(objects, predicates, context)
-    else:
-        prompt = _build_grounding_prompt_from_imgs(objects, predicates, context)
-
-    # Prompt the VLM to generate grounded predicates
-    return generate_response(
-        model_id,
-        prompt,
-        max_tokens,
-        temperature,
-        seed,
-    )
-
-
-def _get_objects_and_predicates(
+def extract_dataset_info(
     dataset_problem_dir: Path,
     gt_domain: str,
 ) -> tuple[set[str], set[str], List[Path], str]:
@@ -153,24 +62,216 @@ def _get_objects_and_predicates(
     return objects, predicates, image_paths, instruction
 
 
-def build_formalizer_prompts(
-    dataset_problem_dir: Path,
-    gt_domain: str,
-) -> tuple[List[dict], List[dict], set[str]]:
-    """Build prompts for the (image-based) and goal (instruction-based).
+# Prompts for input type: image(s)
+# - PDDL predicate grounding from multiple images in a single step (no merging)
+# - PDDL predicate grounding from one image (later merged in a second step)
+# - Scene graph generation from one image (later merged in a second step)
 
-    Returns: (init_prompt, goal_prompt, objects)
-    """
-    objects, predicates, image_paths, instruction = _get_objects_and_predicates(
-        dataset_problem_dir, gt_domain
-    )
 
-    init_prompt = _build_grounding_prompt_from_imgs(objects, predicates, image_paths)
-    goal_prompt = _build_grounding_prompt_from_instruction(
-        objects, predicates, instruction
-    )
+def build_grounding_prompt_imgs(
+    objects: set[str],
+    predicates: set[str],
+    image_paths: List[Path],
+) -> List[dict]:
+    """Builds a prompt to generate grounded predicates from multiple images."""
+    return [
+        {
+            "type": "text",
+            "text": (
+                "You are given a scene from multiple viewpoints, a set of objects, and a set of predicates.\n"
+                "Describe the objects, their positions, and their spatial relationships.\n\n"
+                "Hints:\n"
+                "If no robot arm or gripper is visible in the image, assume the gripper is empty and not holding any object.\n"
+                "The predicate (on ?x - block ?y - block) is defined as block x is on block y."
+            ),
+        },
+        *(image_block(p) for p in image_paths),
+        {
+            "type": "text",
+            "text": (
+                f"Objects:\n{', '.join(sorted(objects))}\n\n"
+                f"Predicates:\n{', '.join(sorted(predicates))}\n\n"
+            ),
+        },
+        {
+            "type": "text",
+            "text": "First, complete your detailed analysis. Then, determine the true grounded predicates and list them enclosed in triple backticks in the format (predicate arg1 arg2 ...).",
+        },
+    ]
 
-    return init_prompt, goal_prompt, objects
+
+def build_grounding_prompt_img(
+    objects: set[str],
+    predicates: set[str],
+    image_path: Path,
+) -> List[dict]:
+    """Builds a prompt to generate grounded predicates from a single image."""
+    return [
+        {
+            "type": "text",
+            "text": (
+                "You are given a scene, a set of objects, and a set of predicates.\n"
+                "Describe the objects, their positions, and their spatial relationships.\n\n"
+                "Hints:\n"
+                "If no robot arm or gripper is visible in the image, assume the gripper is empty and not holding any object.\n"
+                "The predicate (on ?x - block ?y - block) is defined as block x is on block y."
+            ),
+        },
+        image_block(image_path),
+        {
+            "type": "text",
+            "text": (
+                f"Objects:\n{', '.join(sorted(objects))}\n\n"
+                f"Predicates:\n{', '.join(sorted(predicates))}\n\n"
+            ),
+        },
+        {
+            "type": "text",
+            "text": "First, complete your detailed analysis. Then, determine the true grounded predicates and list them enclosed in triple backticks in the format (predicate arg1 arg2 ...).",
+        },
+    ]
+
+
+def build_scene_graph_prompt_img(
+    objects: set[str],
+    predicates: set[str],
+    image_path: Path,
+) -> List[dict]:
+    """Builds a prompt to generate a scene graph from a single image."""
+    return [
+        {
+            "type": "text",
+            "text": (
+                "You are given a scene, a set of objects, and a set of predicates.\n"
+                "Describe the objects, their positions, and their spatial relationships.\n\n"
+                "Hints:\n"
+                "If no robot arm or gripper is visible in the image, assume the gripper is empty and not holding any object.\n"
+                "The predicate (on ?x - block ?y - block) is defined as block x is on block y."
+            ),
+        },
+        image_block(image_path),
+        {
+            "type": "text",
+            "text": (
+                f"Objects:\n{', '.join(sorted(objects))}\n\n"
+                f"Predicates:\n{', '.join(sorted(predicates))}\n\n"
+            ),
+        },
+        {
+            "type": "text",
+            "text": "First, complete your detailed analysis. Then, generate a scene graph.",
+        },
+    ]
+
+
+# Prompts for input type: instruction text
+# - PDDL predicate grounding from instruction (no merging)
+
+
+def build_grounding_prompt_from_instruction(
+    objects: set[str],
+    predicates: set[str],
+    instruction: str,
+) -> List[dict]:
+    """Builds a prompt to generate grounded predicates from an instruction."""
+    return [
+        {
+            "type": "text",
+            "text": (
+                "Given an instruction, a set of objects, and a set of predicates, determine the true grounded predicates.\n\n"
+                "Hints:\n"
+                "If no robot arm or gripper is mentioned in the instruction, assume the gripper is empty and not holding any object.\n"
+                "The predicate (on ?x - block ?y - block) is defined as block x is on block y."
+                f"Instruction:\n{instruction}\n\n"
+                f"Objects:\n{', '.join(sorted(objects))}\n\n"
+                f"Predicates:\n{', '.join(sorted(predicates))}"
+            ),
+        },
+        {
+            "type": "text",
+            "text": "After determining the true grounded predicates, list them enclosed in triple backticks in the format (predicate arg1 arg2 ...).",
+        },
+    ]
+
+
+# Prompts for merging
+# - Merging multiple lists of PDDL grounded predicates into one consistent list of PDDL grounded predicates
+# - Merging multiple scene graphs into one consistent list of PDDL grounded predicates
+
+
+def _extract_observations_from_responses(responses: list[str]) -> str:
+    """Helper function to extract and format observations from multiple VLM responses for merging prompts."""
+    observations = ""
+    for i, response in enumerate(responses, 1):
+        formatted = "\n".join(extract_output_from_response(response)[0])
+        observations += f"Observation {i}:\n{formatted}\n\n"
+    return observations
+
+
+def build_merge_grounded_prompt(
+    objects: set[str],
+    predicates: set[str],
+    per_image_responses: list[str],
+) -> List[dict]:
+    """Builds a prompt to merge multiple per-image predicate lists into one."""
+    observations = _extract_observations_from_responses(per_image_responses)
+
+    return [
+        {
+            "type": "text",
+            "text": (
+                "You are given multiple observations of the same scene from different viewpoints, "
+                "a set of objects, and a set of predicates.\n"
+                "Each observation is a list of grounded predicates generated independently from a single image.\n\n"
+                "Your task is to reason about all observations and produce a single, consistent list of true grounded predicates "
+                "that best represents the scene.\n"
+                "Resolve any conflicts between observations by reasoning about which predicates are most likely correct.\n\n"
+                "Hints:\n"
+                "If no robot arm or gripper is mentioned in any observation, assume the gripper is empty and not holding any object.\n"
+                "The predicate (on ?x - block ?y - block) is defined as block x is on block y.\n\n"
+                f"{observations}"
+                f"Objects:\n{', '.join(sorted(objects))}\n\n"
+                f"Predicates:\n{', '.join(sorted(predicates))}\n\n"
+            ),
+        },
+        {
+            "type": "text",
+            "text": "First, complete your detailed analysis. Then, determine the true grounded predicates and list them enclosed in triple backticks in the format (predicate arg1 arg2 ...).",
+        },
+    ]
+
+
+def build_merge_scene_graph_prompt(
+    objects: set[str],
+    predicates: set[str],
+    per_image_responses: list[str],
+) -> List[dict]:
+    """Builds a prompt to merge multiple per-image scene graph lists into a single list of grounded predicates."""
+    observations = _extract_observations_from_responses(per_image_responses)
+
+    return [
+        {
+            "type": "text",
+            "text": (
+                "You are given multiple observations of the same scene from different viewpoints, "
+                "a set of objects, and a set of predicates.\n"
+                "Each observation is a scene graph generated independently from a single image.\n\n"
+                "Your task is to reason about all observations and produce a single, consistent list of true grounded predicates "
+                "that best represents the scene.\n"
+                "Resolve any conflicts between observations by reasoning about which predicates are most likely correct.\n\n"
+                "Hints:\n"
+                "If no robot arm or gripper is mentioned in any observation, assume the gripper is empty and not holding any object.\n"
+                "The predicate (on ?x - block ?y - block) is defined as block x is on block y.\n\n"
+                f"{observations}"
+                f"Objects:\n{', '.join(sorted(objects))}\n\n"
+                f"Predicates:\n{', '.join(sorted(predicates))}\n\n"
+            ),
+        },
+        {
+            "type": "text",
+            "text": "First, complete your detailed analysis. Then, determine the true grounded predicates and list them enclosed in triple backticks in the format (predicate arg1 arg2 ...).",
+        },
+    ]
 
 
 def assemble_pddl_problem(
@@ -216,52 +317,4 @@ def assemble_pddl_problem(
         goal_response,
         init_response_extracted,
         goal_response_extracted,
-    )
-
-
-def generate_pddl_problem(
-    model_id: str,
-    dataset_problem_dir: Path,
-    gt_domain: str,
-    gt_problem: str,
-    max_tokens: int,
-    temperature: float,
-    seed: int,
-) -> tuple[str, str, str, str, str]:
-    """Generates a PDDL problem file given context from the dataset.
-
-    Returns: (problem, init_response, goal_response, init_response_extracted, goal_response_extracted)
-    """
-    # Build context for prompting VLM
-    objects, predicates, image_paths, instruction = _get_objects_and_predicates(
-        dataset_problem_dir, gt_domain
-    )
-
-    # Prompt VLM to generate grounded predicates for the init and goal sections
-    init_response = _generate_grounded_preds(
-        model_id,
-        image_paths,
-        objects,
-        predicates,
-        max_tokens,
-        temperature,
-        seed,
-    )
-    goal_response = _generate_grounded_preds(
-        model_id,
-        instruction,
-        objects,
-        predicates,
-        max_tokens,
-        temperature,
-        seed,
-    )
-    
-    # Assemble problem using the generated predicates
-    return assemble_pddl_problem(
-        init_response,
-        goal_response,
-        objects,
-        gt_domain,
-        gt_problem,
     )
