@@ -13,6 +13,22 @@ ALIAS_MAP = {
 }
 
 
+def get_present_objects() -> set[str]:
+    """Return the set of present objects for the current domain.
+
+    TODO: Placeholder: hardcoded objects for blocksworld_real, make sure to use ALIAS_MAP.
+    """
+    return {
+        "robot1 - robot",
+        "red_block - block",
+        "orange_block - block",
+        "yellow_block - block",
+        "green_block - block",
+        "blue_block - block",
+        "purple_block - block",
+    }
+
+
 def _find_balanced(text: str, start_idx: int) -> str:
     """Return the balanced parenthesized block starting at text[start_idx]='('."""
     depth = 0
@@ -78,7 +94,7 @@ def _parse_objects(text: str) -> set[str]:
 
 
 def parse_section(text: str, section: str) -> set[str]:
-    """Parse the :section and return a set of 'predicate args' strings."""
+    """Parse the :section and return a set of '(predicate arg1 arg2 ...)' strings."""
     inner = _get_body(text, section)
     if not inner:
         return set()
@@ -100,6 +116,36 @@ def parse_section(text: str, section: str) -> set[str]:
         normalized.add(f"({tokens[0]} {' '.join(args)})")  # type: ignore
 
     return normalized
+
+
+def extract_domain_sections(domain_text: str) -> dict[str, set[str]]:
+    """Extract types, predicates, and actions from a PDDL domain string.
+    
+    Types are returned as a set of type names.
+    Predicates are returned as a set of '(predicate arg1 arg2 ...)' strings.
+    Actions are returned as a set of '(:action ...)' strings.
+
+    Returns dict with keys: "types", "predicates", "actions"
+    """
+    # Types
+    types_body = _get_body(domain_text, ":types")
+    types = set(types_body.split()) if types_body else set()
+
+    # Predicates
+    predicates = parse_section(domain_text, ":predicates")
+    predicates = set(p.strip() for p in predicates)
+
+    # Actions
+    actions = set()
+    idx = 0
+    while True:
+        idx = domain_text.find("(:action", idx)
+        if idx == -1:
+            break
+        actions.add(_find_balanced(domain_text, idx))
+        idx += 1
+
+    return {"types": types, "predicates": predicates, "actions": actions}
 
 
 def extract_normalized_problem(

@@ -1,22 +1,12 @@
 import json
 from pathlib import Path
 
-from models.formalizer import (
-    assemble_pddl_problem,
-    build_grounding_prompt_from_instruction,
-    build_grounding_prompt_img,
-    build_grounding_prompt_imgs,
-    build_merge_grounded_prompt,
-    build_merge_scene_graph_prompt,
-    build_scene_graph_prompt_img,
-    extract_dataset_info,
-)
-from models.formalizer_reprompt import regenerate_pddl_problem
-from models.planner import generate_plan
 from plans.find_plan import find_plan
 from plans.validate_plan import validate_plan
-from utils.helpers import setup_problem
+from utils.helpers import assemble_pddl_problem, extract_dataset_info, setup_problem
 from utils.parse import (
+    extract_output_from_response,
+    get_present_objects,
     normalize_plan,
     normalize_problem,
 )
@@ -29,10 +19,123 @@ from utils.statistics import (
 from utils.vlm import generate_response
 
 
+def _run_planner(args, mode_module, model_id, output_dir, dataset_dir):
+    statistics_summary = {}
+    for dataset_problem_dir in sorted(dataset_dir.iterdir()):
+        if not dataset_problem_dir.is_dir():
+            continue
+
+        (
+            name,
+            output_problem_dir,
+            gt_domain,
+            gt_problem,
+            gt_domain_path,
+            gt_problem_path,
+        ) = setup_problem(dataset_problem_dir, output_dir)
+
+        print(f"  Processing {name}...")
+        statistics_summary[name] = {}
+
+        objects = get_present_objects()
+        image_paths, instruction = extract_dataset_info(dataset_problem_dir)
+        
+        prompt = mode_module.build_prompt(objects, gt_domain, image_paths, instruction)
+        response = generate_response(
+            model_id, prompt, args.max_tokens, args.temperature, args.seed
+        )
+        
+        _, plan_str = extract_output_from_response(response)
+        plan = normalize_plan(plan_str)
+        (output_problem_dir / "plan.txt").write_text(plan)
+        (output_problem_dir / "response.txt").write_text(response)
+
+        plan_success, _ = validate_plan(gt_domain_path, gt_problem_path, plan)
+        statistics_summary[name]["plan_success"] = plan_success
+
+        eval_report = get_eval_report_planner(statistics_summary)
+        with open(output_dir / "eval_report.json", "w") as f:
+            json.dump(eval_report, f, indent=4)
+
+
+def _run_formalizer(args, mode_module, model_id, output_dir, dataset_dir, downward_dir):
+    statistics_summary = {}
+    for dataset_problem_dir in sorted(dataset_dir.iterdir()):
+        if not dataset_problem_dir.is_dir():
+            continue
+
+        (
+            name,
+            output_problem_dir,
+            gt_domain,
+            gt_problem,
+            gt_domain_path,
+            gt_problem_path,
+        ) = setup_problem(dataset_problem_dir, output_dir)
+
+        print(f"  Processing {name}...")
+        statistics_summary[name] = {}
+
+        objects = get_present_objects()
+        image_paths, instruction = extract_dataset_info(dataset_problem_dir)
+
+        # Goal state
+        goal_prompt = mode_module.build_goal_prompt(objects, gt_domain, instruction)
+        goal_response = generate_response(
+            model_id, goal_prompt, args.max_tokens, args.temperature, args.seed
+        )
+
+        # Init state - mode_module decides whether to generate single prompt or multiple per-image prompts with merge step
+        init_prompts = mode_module.build_init_prompts(objects, gt_domain, image_paths)
+        if len(init_prompts) == 1:
+            init_response = generate_response(
+                model_id, init_prompts[0], args.max_tokens, args.temperature, args.seed
+            )
+            per_image_responses = None
+        else:
+            per_image_responses = [
+                generate_response(
+                    model_id, p, args.max_tokens, args.temperature, args.seed
+                )
+                for p in init_prompts
+            ]
+            merge_prompt = mode_module.build_merge_prompt(
+                objects, gt_domain, per_image_responses
+            )
+            init_response = generate_response(
+                model_id, merge_prompt, args.max_tokens, args.temperature, args.seed
+            )
+
+        # Assemble PDDL problem
+        (
+            problem,
+            init_response_extracted,
+            goal_response_extracted,
+        ) = assemble_pddl_problem(
+            init_response, goal_response, objects, gt_domain, gt_problem
+        )
+
+        # Solve, validate, and save
+        solve_by_formalization(
+            name,
+            downward_dir,
+            gt_domain,
+            gt_problem,
+            gt_domain_path,
+            gt_problem_path,
+            problem,
+            init_response,
+            goal_response,
+            init_response_extracted,
+            goal_response_extracted,
+            per_image_responses,
+            statistics_summary,
+            output_dir,
+            output_problem_dir,
+        )
+
+
 def solve_by_formalization(
-    args,
-    model_id: str,
-    dataset_problem_dir: Path,
     name: str,
     downward_dir: Path,
     gt_domain: str,
@@ -42,85 +145,45 @@ def solve_by_formalization(
     problem: str,
     init_response: str,
     goal_response: str,
-    init_cleanup_response: str,
-    goal_cleanup_response: str,
+    init_response_extracted: str,
+    goal_response_extracted: str,
     per_image_responses: list[str] | None,
     statistics_summary: dict[str, dict],
     output_dir: Path,
     output_problem_dir: Path,
 ) -> None:
-    """Helper function for synchronous pipeline and re-prompting batch pipeline.
-    Given a generated PDDL problem file, attempt to solve and validate it using Fast Downward and Unified Planning.
+    """Given a generated PDDL problem file, attempt to solve and validate it.
 
-    Returns None but updates statistics_summary in-place and saves all relevant files to output_problem_dir for error analysis."""
+    Updates statistics_summary in-place and saves all relevant files."""
     problem = normalize_problem(problem)
     (output_problem_dir / "problem.pddl").write_text(problem)
 
     # Save VLM responses
     (output_problem_dir / "init_response.txt").write_text(init_response)
     (output_problem_dir / "goal_response.txt").write_text(goal_response)
-    (output_problem_dir / "init_cleanup_response.txt").write_text(init_cleanup_response)
-    (output_problem_dir / "goal_cleanup_response.txt").write_text(goal_cleanup_response)
+    (output_problem_dir / "init_response_extracted.txt").write_text(init_response_extracted)
+    (output_problem_dir / "goal_response_extracted.txt").write_text(goal_response_extracted)
     if per_image_responses:
         for i, resp in enumerate(per_image_responses):
-            (output_problem_dir / f"init_response_img{i}.txt").write_text(resp)
+            (output_problem_dir / f"init_response_img_{i}.txt").write_text(resp)
 
-    # Solve the generated problem using Fast Downward
-    downward_success, downward_error_msg, plan = find_plan(
+    # Solve the generated problem using Fast Downward and validate if successful
+    downward_success, _, plan = find_plan(
         gt_domain, problem, downward_dir
     )
-    # # If the plan generation attempt fails, re-prompt the VLM to try to fix the problem file
-    # # Currently, only re-prompts once and only regenerates the init section
-    # if not downward_success:
-    #     (output_problem_dir / "downward_error.txt").write_text(downward_error_msg)
-
-    #     # Re-prompt the VLM
-    #     statistics_summary[name]["num_reprompts"] = 1
-    #     (
-    #         problem,
-    #         init_response,
-    #         init_cleanup_response,
-    #     ) = regenerate_pddl_problem(
-    #         model_id,
-    #         dataset_problem_dir,
-    #         gt_domain,
-    #         problem,
-    #         args.max_tokens,
-    #         args.temperature,
-    #         args.seed,
-    #     )
-    #     problem = normalize_problem(problem)
-    #     (output_problem_dir / "problem_reprompted.pddl").write_text(problem)
-
-    #     # Save the re-prompted VLM responses
-    #     (output_problem_dir / "init_response_reprompted.txt").write_text(init_response)
-    #     (output_problem_dir / "init_cleanup_response_reprompted.txt").write_text(
-    #         init_cleanup_response
-    #     )
-
-    #     # Try Fast Downward again on the re-prompted problem
-    #     downward_success, downward_error_msg, plan = find_plan(
-    #         gt_domain, problem, downward_dir
-    #     )
-
     if not downward_success:
-        # If it fails the re-prompting attempt
         statistics_summary[name]["downward_success"] = False
-        (output_problem_dir / "downward_error_reprompted.txt").write_text(
-            downward_error_msg
-        )
         plan_success = False
     else:
-        # If the plan generation is successful, check if the plan was successful using UP
         plan = normalize_plan(plan)
         (output_problem_dir / "plan.txt").write_text(plan)
 
-        plan_success, plan_error_msg = validate_plan(
+        plan_success, _ = validate_plan(
             gt_domain_path, gt_problem_path, plan
         )
         statistics_summary[name]["plan_success"] = plan_success
 
-    # Determine whether the plan failed due to init or goal state (or both) for error analysis
+    # Determine whether the plan failed due to init or goal state
     if not plan_success:
         statistics_summary[name].update(
             compute_plan_success_with_ground_truth(
@@ -142,160 +205,10 @@ def solve_by_formalization(
         json.dump(eval_report, f, indent=4)
 
 
-def main(args, model_id, output_dir, dataset_dir, downward_dir):
-    statistics_summary = {}
-    for dataset_problem_dir in sorted(dataset_dir.iterdir()):
-        if not dataset_problem_dir.is_dir():
-            continue
-
-        (
-            name,
-            output_problem_dir,
-            gt_domain,
-            gt_problem,
-            gt_domain_path,
-            gt_problem_path,
-        ) = setup_problem(dataset_problem_dir, output_dir)
-
-        print(f"  Processing {name}...")
-        statistics_summary[name] = {}
-
-        if args.mode == "planner":
-            # Generate plan using VLM
-            plan, response = generate_plan(
-                model_id,
-                dataset_problem_dir,
-                args.max_tokens,
-                args.temperature,
-                args.seed,
-            )
-            plan = normalize_plan(plan)
-            (output_problem_dir / "plan.txt").write_text(plan)
-
-            # Save VLM response
-            (output_problem_dir / "response.txt").write_text(response)
-
-            # Check if plan was successful using UP
-            plan_success, plan_error_msg = validate_plan(
-                gt_domain_path, gt_problem_path, plan
-            )
-            statistics_summary[name]["plan_success"] = plan_success
-
-            # Save evaluation report
-            eval_report = get_eval_report_planner(statistics_summary)
-            with open(output_dir / "eval_report.json", "w") as f:
-                json.dump(eval_report, f, indent=4)
-
-        elif args.mode == "formalizer":
-            # Generate PDDL problem file using VLM
-            objects, predicates, image_paths, instruction = extract_dataset_info(
-                dataset_problem_dir, gt_domain
-            )
-
-            # Intermediate representation only affects the init prompt
-            goal_prompt = build_grounding_prompt_from_instruction(
-                objects, predicates, instruction
-            )
-            goal_response = generate_response(
-                model_id,
-                goal_prompt,
-                args.max_tokens,
-                args.temperature,
-                args.seed,
-            )
-
-            # Build different prompts depending on intermediate representation choice
-            # Then generate init response(s) and potentially merge response if using intermediate representation
-            if args.intermediate == "none":
-                if len(image_paths) == 1:
-                    init_prompt = build_grounding_prompt_img(
-                        objects, predicates, image_paths[0]
-                    )
-                else:
-                    init_prompt = build_grounding_prompt_imgs(
-                        objects, predicates, image_paths
-                    )
-                init_response = generate_response(
-                    model_id,
-                    init_prompt,
-                    args.max_tokens,
-                    args.temperature,
-                    args.seed,
-                )
-                per_image_init_responses = (
-                    None  # Used for intermediate representation bookkeeping
-                )
-            else:
-                if args.intermediate == "scene_graph":
-                    per_image_prompts = [
-                        build_scene_graph_prompt_img(objects, predicates, img_path)
-                        for img_path in image_paths
-                    ]
-                elif args.intermediate == "pddl":
-                    per_image_prompts = [
-                        build_grounding_prompt_img(objects, predicates, img_path)
-                        for img_path in image_paths
-                    ]
-                else:
-                    raise ValueError(
-                        f"Invalid intermediate representation: {args.intermediate}"
-                    )
-
-                per_image_init_responses = [
-                    generate_response(
-                        model_id,
-                        init_prompt,
-                        args.max_tokens,
-                        args.temperature,
-                        args.seed,
-                    )
-                    for init_prompt in per_image_prompts
-                ]
-                if args.intermediate == "scene_graph":
-                    merge_prompt = build_merge_scene_graph_prompt(
-                        objects, predicates, per_image_init_responses
-                    )
-                elif args.intermediate == "pddl":
-                    merge_prompt = build_merge_grounded_prompt(
-                        objects, predicates, per_image_init_responses
-                    )
-                init_response = generate_response(
-                    model_id,
-                    merge_prompt,  # type: ignore
-                    args.max_tokens,
-                    args.temperature,
-                    args.seed,
-                )
-
-            # Assemble problem using the generated predicates
-            (
-                problem,
-                init_response,
-                goal_response,
-                init_cleanup_response,
-                goal_cleanup_response,
-            ) = assemble_pddl_problem(
-                init_response, goal_response, objects, gt_domain, gt_problem
-            )
-
-            # Run helper function to solve the problem, validate the plan, compute statistics, and save all relevant files for error analysis
-            solve_by_formalization(
-                args,
-                model_id,
-                dataset_problem_dir,
-                name,
-                downward_dir,
-                gt_domain,
-                gt_problem,
-                gt_domain_path,
-                gt_problem_path,
-                problem,
-                init_response,
-                goal_response,
-                init_cleanup_response,
-                goal_cleanup_response,
-                per_image_init_responses,
-                statistics_summary,
-                output_dir,
-                output_problem_dir,
-            )
+def main(args, mode_module, kind, model_id, output_dir, dataset_dir, downward_dir):
+    if kind == "planner":
+        _run_planner(args, mode_module, model_id, output_dir, dataset_dir)
+    else:
+        _run_formalizer(
+            args, mode_module, model_id, output_dir, dataset_dir, downward_dir
+        )

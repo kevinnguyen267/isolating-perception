@@ -1,17 +1,17 @@
 import json
 
-from models.planner import build_planner_prompt
 from plans.validate_plan import validate_plan
 from utils.batch import build_batch_request, run_batch
-from utils.helpers import setup_problem
+from utils.helpers import extract_dataset_info, setup_problem
 from utils.parse import (
     extract_output_from_response,
+    get_present_objects,
     normalize_plan,
 )
 from utils.statistics import get_eval_report_planner
 
 
-def main(args, model_id, output_dir, dataset_dir):
+def main(args, mode_module, model_id, output_dir, dataset_dir):
     # Build prompts for all problems and collect metadata
     print("Building prompts...")
     batch_requests = []
@@ -29,8 +29,11 @@ def main(args, model_id, output_dir, dataset_dir):
             gt_domain_path,
             gt_problem_path,
         ) = setup_problem(dataset_problem_dir, output_dir)
-
-        prompt = build_planner_prompt(dataset_problem_dir)
+        
+        objects = get_present_objects()
+        image_paths, instruction = extract_dataset_info(dataset_problem_dir)
+        
+        prompt = mode_module.build_prompt(objects, gt_domain, image_paths, instruction)
         custom_id = f"{name}__plan"
 
         batch_requests.append(

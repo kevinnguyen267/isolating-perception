@@ -1,10 +1,17 @@
 import os
 import random
+import re
 from pathlib import Path
+from typing import List
 
 import numpy as np
 import torch
-from utils.parse import normalize_problem
+
+from utils.parse import (
+    create_problem_from_sections,
+    extract_output_from_response,
+    normalize_problem,
+)
 
 
 def seed_everything(seed: int):
@@ -19,7 +26,7 @@ def seed_everything(seed: int):
     torch.backends.cudnn.benchmark = False
 
 
-def get_gt_domain_and_problem(
+def _get_gt_domain_and_problem(
     dataset_problem_dir: Path, output_problem_dir: Path
 ) -> tuple[str, str, Path, Path]:
     """Get ground truth domain and problem from the dataset problem directory.
@@ -63,7 +70,7 @@ def setup_problem(
         symlink_path.symlink_to(dataset_problem_dir.resolve())
 
     # Get ground truth domain (unmodified) and problem (normalized) texts
-    gt_domain, gt_problem, gt_domain_path, gt_problem_path = get_gt_domain_and_problem(
+    gt_domain, gt_problem, gt_domain_path, gt_problem_path = _get_gt_domain_and_problem(
         dataset_problem_dir, output_problem_dir
     )
 
@@ -74,4 +81,69 @@ def setup_problem(
         gt_problem,
         gt_domain_path,
         gt_problem_path,
+    )
+
+
+def extract_dataset_info(
+    dataset_problem_dir: Path,
+) -> tuple[List[Path], str]:
+    """Extract image paths and instruction from the dataset directory.
+
+    Returns: (image_paths, instruction)
+    """
+    image_paths = sorted((dataset_problem_dir / "observations").glob("*.*"))
+    if not image_paths:
+        raise FileNotFoundError(
+            f"No images found in {dataset_problem_dir / 'observations'}"
+        )
+    try:
+        instruction = (dataset_problem_dir / "instruction.txt").read_text()
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"No instruction found in {dataset_problem_dir / 'instruction.txt'}"
+        )
+
+    return image_paths, instruction
+
+def assemble_pddl_problem(
+    init_response: str,
+    goal_response: str,
+    objects: set[str],
+    gt_domain: str,
+    gt_problem: str,
+) -> tuple[str, str, str]:
+    """Assemble a PDDL problem from pre-obtained VLM responses.
+
+    Returns: (problem, init_response_extracted, goal_response_extracted)
+    """
+    init_preds, init_response_extracted = extract_output_from_response(init_response)
+    goal_preds, goal_response_extracted = extract_output_from_response(goal_response)
+
+    # Extract domain name from the ground truth domain file
+    match = re.search(r"\(domain\s+(\w+)\)", gt_domain)
+    if not match:
+        raise ValueError(
+            "Could not extract domain name from the ground truth domain file."
+        )
+    domain_name = match.group(1)
+
+    # Extract problem name from the ground truth problem file
+    match = re.search(r"\(problem\s+(\w+)\)", gt_problem)
+    if not match:
+        raise ValueError(
+            "Could not extract problem name from the ground truth problem file."
+        )
+    problem_name = match.group(1)
+
+    problem = create_problem_from_sections(
+        problem_name,
+        domain_name,
+        objects,
+        init_preds,
+        goal_preds,
+    )
+    return (
+        problem,
+        init_response_extracted,
+        goal_response_extracted,
     )
