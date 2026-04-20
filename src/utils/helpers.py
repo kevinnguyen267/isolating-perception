@@ -35,7 +35,7 @@ def _get_gt_domain_and_problem(
     Returns: (domain_text, normalized_problem_text, domain_path, problem_path)
     """
     # Read (unmodified) domain
-    domain_path = dataset_problem_dir / "domain.pddl"
+    domain_path = dataset_problem_dir.parent / "domain.pddl"
     if not domain_path.exists():
         raise FileNotFoundError(f"Ground truth domain file not found: {domain_path}")
     domain = domain_path.read_text()
@@ -91,7 +91,7 @@ def extract_dataset_info(
 
     Returns: (image_paths, instruction)
     """
-    image_paths = sorted((dataset_problem_dir / "observations").glob("*.*"))
+    image_paths = sorted((dataset_problem_dir / "observations").glob("img_*"))
     if not image_paths:
         raise FileNotFoundError(
             f"No images found in {dataset_problem_dir / 'observations'}"

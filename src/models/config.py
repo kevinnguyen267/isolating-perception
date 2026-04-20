@@ -14,7 +14,7 @@ MODEL_CONFIG = {
         "model_id": "Qwen/Qwen3.5-122B-A10B",
         "vllm_serve_args": [
             "-tp", "4",
-            "--max-model-len", "16384",
+            "--max-model-len", "32768",
             "--enable-expert-parallel",
             "--mm-encoder-tp-mode", "data",
             "--mm-processor-cache-type", "shm",
@@ -26,7 +26,7 @@ MODEL_CONFIG = {
         "model_id": "Qwen/Qwen3-VL-235B-A22B-Instruct",
         "vllm_serve_args": [
             "-tp", "4",
-            "--max-model-len", "16384",
+            "--max-model-len", "32768",
             "--enable-expert-parallel",
             "--mm-encoder-tp-mode", "data",
             "--limit-mm-per-prompt.video", "0",

@@ -1,62 +1,33 @@
 from modes import (
-    formalizer_1,
-    formalizer_2,
-    formalizer_3,
-    formalizer_4,
-    formalizer_5,
-    formalizer_6,
-    planner_1,
-    planner_2,
-    planner_3,
+    formalizer_direct,
+    formalizer_int_pddl,
+    formalizer_int_sg,
+    planner,
 )
 
 MODE_REGISTRY: dict[str, dict] = {
-    "formalizer-1": {
+    "formalizer-direct": {
         "kind": "formalizer",
-        "module": formalizer_1,
-        "description": "Formalizer variant 1",
+        "module": formalizer_direct,
     },
-    "formalizer-2": {
+    "formalizer-intermediate-sg": {
         "kind": "formalizer",
-        "module": formalizer_2,
-        "description": "Formalizer variant 2",
+        "module": formalizer_int_sg,
     },
-    "formalizer-3": {
+    "formalizer-intermediate-pddl": {
         "kind": "formalizer",
-        "module": formalizer_3,
-        "description": "Formalizer variant 3",
+        "module": formalizer_int_pddl,
     },
-    "formalizer-4": {
-        "kind": "formalizer",
-        "module": formalizer_4,
-        "description": "Formalizer variant 4",
-    },
-    "formalizer-5": {
-        "kind": "formalizer",
-        "module": formalizer_5,
-        "description": "Formalizer variant 5",
-    },
-    "formalizer-6": {
-        "kind": "formalizer",
-        "module": formalizer_6,
-        "description": "Formalizer variant 6",
-    },
-    "planner-1": {
+    "planner": {
         "kind": "planner",
-        "module": planner_1,
-        "description": "Planner variant 1",
-    },
-    "planner-2": {
-        "kind": "planner",
-        "module": planner_2,
-        "description": "Planner variant 2",
-    },
-    "planner-3": {
-        "kind": "planner",
-        "module": planner_3,
-        "description": "Planner variant 3",
+        "module": planner,
     },
 }
+
+for mode_name, mode_config in MODE_REGISTRY.items():
+    assert "kind" in mode_config
+    assert "module" in mode_config
+    assert mode_config["kind"] in {"formalizer", "planner"}
 
 ALL_MODES = list(MODE_REGISTRY.keys())
 

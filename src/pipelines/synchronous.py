@@ -37,14 +37,14 @@ def _run_planner(args, mode_module, model_id, output_dir, dataset_dir):
         print(f"  Processing {name}...")
         statistics_summary[name] = {}
 
-        objects = get_present_objects()
+        objects = get_present_objects(dataset_problem_dir)
         image_paths, instruction = extract_dataset_info(dataset_problem_dir)
-        
+
         prompt = mode_module.build_prompt(objects, gt_domain, image_paths, instruction)
         response = generate_response(
             model_id, prompt, args.max_tokens, args.temperature, args.seed
         )
-        
+
         _, plan_str = extract_output_from_response(response)
         plan = normalize_plan(plan_str)
         (output_problem_dir / "plan.txt").write_text(plan)
@@ -76,7 +76,7 @@ def _run_formalizer(args, mode_module, model_id, output_dir, dataset_dir, downwa
         print(f"  Processing {name}...")
         statistics_summary[name] = {}
 
-        objects = get_present_objects()
+        objects = get_present_objects(dataset_problem_dir)
         image_paths, instruction = extract_dataset_info(dataset_problem_dir)
 
         # Goal state
@@ -100,19 +100,20 @@ def _run_formalizer(args, mode_module, model_id, output_dir, dataset_dir, downwa
                 for p in init_prompts
             ]
             merge_prompt = mode_module.build_merge_prompt(
-                objects, gt_domain, per_image_responses
+                objects, gt_domain, image_paths, per_image_responses
             )
             init_response = generate_response(
                 model_id, merge_prompt, args.max_tokens, args.temperature, args.seed
             )
 
         # Assemble PDDL problem
+        all_objects = set().union(*objects)
         (
             problem,
             init_response_extracted,
             goal_response_extracted,
         ) = assemble_pddl_problem(
-            init_response, goal_response, objects, gt_domain, gt_problem
+            init_response, goal_response, all_objects, gt_domain, gt_problem
         )
 
         # Solve, validate, and save
@@ -161,16 +162,18 @@ def solve_by_formalization(
     # Save VLM responses
     (output_problem_dir / "init_response.txt").write_text(init_response)
     (output_problem_dir / "goal_response.txt").write_text(goal_response)
-    (output_problem_dir / "init_response_extracted.txt").write_text(init_response_extracted)
-    (output_problem_dir / "goal_response_extracted.txt").write_text(goal_response_extracted)
+    (output_problem_dir / "init_response_extracted.txt").write_text(
+        init_response_extracted
+    )
+    (output_problem_dir / "goal_response_extracted.txt").write_text(
+        goal_response_extracted
+    )
     if per_image_responses:
         for i, resp in enumerate(per_image_responses):
             (output_problem_dir / f"init_response_img_{i}.txt").write_text(resp)
 
     # Solve the generated problem using Fast Downward and validate if successful
-    downward_success, _, plan = find_plan(
-        gt_domain, problem, downward_dir
-    )
+    downward_success, _, plan = find_plan(gt_domain, problem, downward_dir)
     if not downward_success:
         statistics_summary[name]["downward_success"] = False
         plan_success = False
@@ -178,9 +181,7 @@ def solve_by_formalization(
         plan = normalize_plan(plan)
         (output_problem_dir / "plan.txt").write_text(plan)
 
-        plan_success, _ = validate_plan(
-            gt_domain_path, gt_problem_path, plan
-        )
+        plan_success, _ = validate_plan(gt_domain_path, gt_problem_path, plan)
         statistics_summary[name]["plan_success"] = plan_success
 
     # Determine whether the plan failed due to init or goal state

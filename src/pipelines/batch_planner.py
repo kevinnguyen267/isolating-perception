@@ -30,7 +30,7 @@ def main(args, mode_module, model_id, output_dir, dataset_dir):
             gt_problem_path,
         ) = setup_problem(dataset_problem_dir, output_dir)
         
-        objects = get_present_objects()
+        objects = get_present_objects(dataset_problem_dir)
         image_paths, instruction = extract_dataset_info(dataset_problem_dir)
         
         prompt = mode_module.build_prompt(objects, gt_domain, image_paths, instruction)

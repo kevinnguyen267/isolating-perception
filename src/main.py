@@ -32,8 +32,8 @@ def parse_args():
         "--mode",
         type=str,
         choices=ALL_MODES,
-        required=True,
-        help="Mode of operation (e.g. planner-1, formalizer-2, etc.)",
+        default="planner",
+        help="Mode of operation (e.g. planner, formalizer-direct, etc.)",
     )
     parser.add_argument(
         "--fast_downward_dir",

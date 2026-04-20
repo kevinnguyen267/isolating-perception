@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 
 # Alias to canonical name mapping
 ALIAS_MAP = {
@@ -13,20 +14,39 @@ ALIAS_MAP = {
 }
 
 
-def get_present_objects() -> set[str]:
-    """Return the set of present objects for the current domain.
+def _parse_objects_file(filepath: Path) -> set[str]:
+    """Parse an objects text file and return a set of '(name - type)' strings."""
+    objects = set()
+    if not filepath.exists():
+        return objects
+    for line in filepath.read_text().strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(" - ")
+        name = ALIAS_MAP.get(parts[0].strip(), parts[0].strip())
+        obj_type = parts[1].strip()
+        objects.add(f"({name} - {obj_type})")
+    objects.add("(robot1 - robot)")
+    return objects
 
-    TODO: Placeholder: hardcoded objects for blocksworld_real, make sure to use ALIAS_MAP.
-    """
-    return {
-        "robot1 - robot",
-        "red_block - block",
-        "orange_block - block",
-        "yellow_block - block",
-        "green_block - block",
-        "blue_block - block",
-        "purple_block - block",
-    }
+
+def get_present_objects(dataset_problem_dir: Path) -> list[set[str]]:
+    """Get the set of objects present in each image by parsing the corresponding objects text files.
+
+    Returns a list of sets, where each set corresponds to the objects present in one image."""
+    objects_dir = dataset_problem_dir / "objects"
+    observations_dir = dataset_problem_dir / "observations"
+    if not objects_dir.exists() or not observations_dir.exists():
+        raise FileNotFoundError(
+            f"Expected objects and observations directories at {objects_dir} and {observations_dir}"
+        )
+
+    objects = []
+    for img_file in sorted(observations_dir.glob("img_*")):
+        objects.append(_parse_objects_file(objects_dir / (img_file.stem + ".txt")))
+
+    return objects
 
 
 def _find_balanced(text: str, start_idx: int) -> str:
@@ -120,7 +140,7 @@ def parse_section(text: str, section: str) -> set[str]:
 
 def extract_domain_sections(domain_text: str) -> dict[str, set[str]]:
     """Extract types, predicates, and actions from a PDDL domain string.
-    
+
     Types are returned as a set of type names.
     Predicates are returned as a set of '(predicate arg1 arg2 ...)' strings.
     Actions are returned as a set of '(:action ...)' strings.

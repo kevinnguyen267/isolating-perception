@@ -23,7 +23,7 @@ def main(args, mode_module, model_id, output_dir, dataset_dir, downward_dir):
             gt_problem_path,
         ) = setup_problem(dataset_problem_dir, output_dir)
 
-        objects = get_present_objects()
+        objects = get_present_objects(dataset_problem_dir)
         image_paths, instruction = extract_dataset_info(dataset_problem_dir)
 
         # Goal state
@@ -75,6 +75,7 @@ def main(args, mode_module, model_id, output_dir, dataset_dir, downward_dir):
             "gt_problem_path": gt_problem_path,
             "objects": objects,
             "domain_text": gt_domain,
+            "image_paths": image_paths,
             "num_images": num_images,
         }
 
@@ -103,7 +104,7 @@ def main(args, mode_module, model_id, output_dir, dataset_dir, downward_dir):
 
         if all(per_image_responses):
             merge_prompt = mode_module.build_merge_prompt(
-                meta["objects"], meta["domain_text"], per_image_responses
+                meta["objects"], meta["domain_text"], meta["image_paths"], per_image_responses
             )
             merge_requests.append(
                 build_batch_request(
@@ -157,12 +158,13 @@ def main(args, mode_module, model_id, output_dir, dataset_dir, downward_dir):
             continue
 
         # Assemble the PDDL problem
+        all_objects = set().union(*objects)
         (
             problem,
             init_response_extracted,
             goal_response_extracted,
         ) = assemble_pddl_problem(
-            init_response, goal_response, objects, gt_domain, gt_problem
+            init_response, goal_response, all_objects, gt_domain, gt_problem
         )
 
         # Solve, validate, and save
