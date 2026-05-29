@@ -24,7 +24,7 @@ def main(args, mode_module, model_id, output_dir, dataset_dir, downward_dir):
         ) = setup_problem(dataset_problem_dir, output_dir)
 
         objects = get_present_objects(dataset_problem_dir)
-        image_paths, instruction = extract_dataset_info(dataset_problem_dir)
+        image_paths, text_paths, instruction = extract_dataset_info(dataset_problem_dir)
 
         # Goal state
         goal_prompt = mode_module.build_goal_prompt(objects, gt_domain, instruction)
@@ -40,7 +40,7 @@ def main(args, mode_module, model_id, output_dir, dataset_dir, downward_dir):
         )
 
         # Init state - mode_module decides whether to generate single prompt or multiple per-image prompts with merge step
-        init_prompts = mode_module.build_init_prompts(objects, gt_domain, image_paths)
+        init_prompts = mode_module.build_init_prompts(objects, gt_domain, image_paths, text_paths)
         num_images = len(init_prompts)
         if num_images == 1:
             batch_requests.append(

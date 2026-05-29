@@ -54,10 +54,15 @@ def parse_args():
         help="Sampling temperature for generation",
     )
     parser.add_argument(
+        "--use_openrouter",
+        action="store_true",
+        help="Use OpenRouter for API requests (instead of OpenAI or vLLM server)",
+    )
+    parser.add_argument(
         "--batch",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Enable (--batch) or disable (--no-batch) batch processing for GPT",
+        help="Enable (--batch) or disable (--no-batch) batch processing for GPT models (only applicable if not using OpenRouter)",
     )
     parser.add_argument(
         "--terminate_server",
@@ -97,12 +102,21 @@ def main():
         )
 
     # Model setup
-    model_id = MODEL_CONFIG[args.model_name]["model_id"]
-    if "vllm_serve_args" in MODEL_CONFIG[args.model_name]:
-        ensure_vllm_server(args.model_name)
-    if args.model_name.startswith("gpt") and "OPENAI_API_KEY" not in os.environ:
-        raise EnvironmentError("OPENAI_API_KEY environment variable not set.")
-    use_batch = args.batch and args.model_name.startswith("gpt")
+    if args.model_name not in MODEL_CONFIG:
+        raise ValueError(f"Model {args.model_name} not found in MODEL_CONFIG")
+    if args.use_openrouter:
+        model_id = MODEL_CONFIG[args.model_name]["openrouter_model_id"]
+        use_batch = False
+    else:
+        if "vllm_serve_args" in MODEL_CONFIG[args.model_name]:
+            ensure_vllm_server(args.model_name)
+        elif args.model_name.lower().startswith("gpt"):
+            if "OPENAI_API_KEY" not in os.environ:
+                raise EnvironmentError("OPENAI_API_KEY environment variable not set.")
+        else:
+            raise ValueError(f"Model {args.model_name} is not configured for vLLM serving or OpenAI API.")
+        model_id = MODEL_CONFIG[args.model_name]["model_id"]
+        use_batch = args.batch and args.model_name.lower().startswith("gpt")
 
     # Output directory
     mode_label = f"{'batch_' if use_batch else 'seq_'}{mode_str}"
@@ -110,8 +124,6 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path("results") / args.dataset / mode_str / args.model_name / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    print(f"Saving evaluation report to: {(output_dir / 'eval_report.json').resolve()}")
 
     dataset_dir = Path("data") / args.dataset
     if not dataset_dir.exists():

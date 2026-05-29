@@ -6,35 +6,67 @@ from typing import List
 from utils.parse import extract_domain_sections
 from utils.vlm import image_block
 
+
 def build_prompt(
     objects: list[set[str]],
     domain_text: str,
     image_paths: List[Path],
+    text_paths: List[Path],
     instruction: str,
 ) -> List[dict]:
     """Return prompt for generating a plan (sequence of actions) to solve the task."""
     domain = extract_domain_sections(domain_text)
     all_objects = set().union(*objects)
-    
-    return [
-        {
-            "type": "text",
-            "text": (
-                "Given images of the current state of a scene from different views, an instruction that specifies the target state, a set of objects, and a set of actions, "
-                "determine the actions that achieve the target state from the current state."
-            ),
-        },
-        *(image_block(p) for p in image_paths),
-        {
-            "type": "text",
-            "text": (
-                f"Instruction:\n{instruction}\n\n"
-                f"Objects:\n{', '.join(sorted(all_objects))}\n\n"
-                f"Actions:\n{', '.join(sorted(domain['actions']))}"
-            ),
-        },
-        {
-            "type": "text",
-            "text": "After determining the actions that achieve the target state from the current state, list them enclosed in triple backticks in the format (action arg1 arg2 ...).",
-        },
-    ]
+
+    if not text_paths:
+        return [
+            {
+                "type": "text",
+                "text": (
+                    "Given images of the current state of a scene from different views, an instruction that specifies the target state, a set of objects, and a set of actions, "
+                    "determine the actions that achieve the target state from the current state."
+                ),
+            },
+            *(image_block(p) for p in image_paths),
+            {
+                "type": "text",
+                "text": (
+                    f"Instruction:\n{instruction}\n\n"
+                    f"Objects:\n{', '.join(sorted(all_objects))}\n\n"
+                    f"Actions:\n{', '.join(sorted(domain['actions']))}"
+                ),
+            },
+            {
+                "type": "text",
+                "text": "After determining the actions that achieve the target state from the current state, list them enclosed in triple backticks in the format (action arg1 arg2 ...).",
+            },
+        ]
+    else:
+        if len(image_paths) != 1 or len(text_paths) != 1:
+            raise ValueError(
+                f"Expected exactly one image and one text file when text paths are provided, but got {len(image_paths)} images and {len(text_paths)} text files."
+            )
+        text = text_paths[0].read_text()
+        return [
+            {
+                "type": "text",
+                "text": (
+                    "Given an image and additional textual information about the current state of a scene, an instruction that specifies the target state, a set of objects, and a set of actions, "
+                    "determine the actions that achieve the target state from the current state."
+                ),
+            },
+            image_block(image_paths[0]),
+            {
+                "type": "text",
+                "text": (
+                    f"Additional information:\n{text}\n\n"
+                    f"Instruction:\n{instruction}\n\n"
+                    f"Objects:\n{', '.join(sorted(all_objects))}\n\n"
+                    f"Actions:\n{', '.join(sorted(domain['actions']))}"
+                ),
+            },
+            {
+                "type": "text",
+                "text": "After determining the actions that achieve the target state from the current state, list them enclosed in triple backticks in the format (action arg1 arg2 ...).",
+            },
+        ]

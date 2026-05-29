@@ -38,11 +38,12 @@ def _run_planner(args, mode_module, model_id, output_dir, dataset_dir):
         statistics_summary[name] = {}
 
         objects = get_present_objects(dataset_problem_dir)
-        image_paths, instruction = extract_dataset_info(dataset_problem_dir)
+        image_paths, text_paths, instruction = extract_dataset_info(dataset_problem_dir)
 
-        prompt = mode_module.build_prompt(objects, gt_domain, image_paths, instruction)
+        prompt = mode_module.build_prompt(objects, gt_domain, image_paths, text_paths, instruction)
+        (output_problem_dir / "prompt.txt").write_text(json.dumps(prompt, indent=4))
         response = generate_response(
-            model_id, prompt, args.max_tokens, args.temperature, args.seed
+            model_id, args.use_openrouter, prompt, args.max_tokens, args.temperature, args.seed
         )
 
         _, plan_str = extract_output_from_response(response)
@@ -77,25 +78,28 @@ def _run_formalizer(args, mode_module, model_id, output_dir, dataset_dir, downwa
         statistics_summary[name] = {}
 
         objects = get_present_objects(dataset_problem_dir)
-        image_paths, instruction = extract_dataset_info(dataset_problem_dir)
+        image_paths, text_paths, instruction = extract_dataset_info(dataset_problem_dir)
 
         # Goal state
         goal_prompt = mode_module.build_goal_prompt(objects, gt_domain, instruction)
+        (output_problem_dir / "goal_prompt.txt").write_text(json.dumps(goal_prompt, indent=4))
         goal_response = generate_response(
-            model_id, goal_prompt, args.max_tokens, args.temperature, args.seed
+            model_id, args.use_openrouter, goal_prompt, args.max_tokens, args.temperature, args.seed
         )
 
         # Init state - mode_module decides whether to generate single prompt or multiple per-image prompts with merge step
-        init_prompts = mode_module.build_init_prompts(objects, gt_domain, image_paths)
+        init_prompts = mode_module.build_init_prompts(objects, gt_domain, image_paths, text_paths)
         if len(init_prompts) == 1:
+            (output_problem_dir / "init_prompt.txt").write_text(json.dumps(init_prompts, indent=4))
             init_response = generate_response(
-                model_id, init_prompts[0], args.max_tokens, args.temperature, args.seed
+                model_id, args.use_openrouter, init_prompts[0], args.max_tokens, args.temperature, args.seed
             )
             per_image_responses = None
         else:
+            (output_problem_dir / "init_prompts.txt").write_text(json.dumps(init_prompts, indent=4))
             per_image_responses = [
                 generate_response(
-                    model_id, p, args.max_tokens, args.temperature, args.seed
+                    model_id, args.use_openrouter, p, args.max_tokens, args.temperature, args.seed
                 )
                 for p in init_prompts
             ]
@@ -103,7 +107,7 @@ def _run_formalizer(args, mode_module, model_id, output_dir, dataset_dir, downwa
                 objects, gt_domain, image_paths, per_image_responses
             )
             init_response = generate_response(
-                model_id, merge_prompt, args.max_tokens, args.temperature, args.seed
+                model_id, args.use_openrouter, merge_prompt, args.max_tokens, args.temperature, args.seed
             )
 
         # Assemble PDDL problem

@@ -31,9 +31,9 @@ def main(args, mode_module, model_id, output_dir, dataset_dir):
         ) = setup_problem(dataset_problem_dir, output_dir)
         
         objects = get_present_objects(dataset_problem_dir)
-        image_paths, instruction = extract_dataset_info(dataset_problem_dir)
+        image_paths, text_paths, instruction = extract_dataset_info(dataset_problem_dir)
         
-        prompt = mode_module.build_prompt(objects, gt_domain, image_paths, instruction)
+        prompt = mode_module.build_prompt(objects, gt_domain, image_paths, text_paths, instruction)
         custom_id = f"{name}__plan"
 
         batch_requests.append(

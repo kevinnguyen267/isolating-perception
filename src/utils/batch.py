@@ -24,8 +24,6 @@ def build_batch_request(
             "model": model_id,
             "messages": [{"role": "user", "content": user_content}],
             "max_completion_tokens": max_tokens,
-            "temperature": temperature,
-            "seed": seed,
         },
     }
 
@@ -173,8 +171,6 @@ def run_batch(
                         model=body["model"],
                         messages=body["messages"],
                         max_completion_tokens=body.get("max_completion_tokens"),
-                        temperature=body.get("temperature"),
-                        seed=body.get("seed"),
                     )
 
                     content = response.choices[0].message.content

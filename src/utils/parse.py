@@ -43,8 +43,8 @@ def get_present_objects(dataset_problem_dir: Path) -> list[set[str]]:
         )
 
     objects = []
-    for img_file in sorted(observations_dir.glob("img_*")):
-        objects.append(_parse_objects_file(objects_dir / (img_file.stem + ".txt")))
+    for obs_file in sorted(observations_dir.glob("*")):
+        objects.append(_parse_objects_file(objects_dir / (obs_file.stem + ".txt")))
 
     return objects
 
@@ -138,18 +138,51 @@ def parse_section(text: str, section: str) -> set[str]:
     return normalized
 
 
-def extract_domain_sections(domain_text: str) -> dict[str, set[str]]:
+def _parse_types(types_body: str) -> set[str]:
+    """Parse the :types section and return a set of 'name - parent' strings, where parent is the immediate parent type or 'object' if no parent is specified."""
+    if not types_body:
+        return set()
+
+    tokens = types_body.split()
+    pairs = set()
+    pending = []
+
+    i = 0
+    while i < len(tokens):
+        if tokens[i] == "-":
+            if i + 1 >= len(tokens):
+                break
+            parent = tokens[i + 1]
+            for child in pending:
+                pairs.add(f"{child} - {parent}")
+            pending = []
+            i += 2
+        else:
+            pending.append(tokens[i])
+            i += 1
+
+    for child in pending:
+        pairs.add(f"{child} - object")
+
+    return pairs
+
+
+def extract_domain_sections(domain_text: str) -> dict[str, str | set[str]]:
     """Extract types, predicates, and actions from a PDDL domain string.
 
     Types are returned as a set of type names.
     Predicates are returned as a set of '(predicate arg1 arg2 ...)' strings.
     Actions are returned as a set of '(:action ...)' strings.
 
-    Returns dict with keys: "types", "predicates", "actions"
+    Returns dict with keys: "name", "types", "predicates", "actions"
     """
+    # Name
+    name_match = re.search(r"\(\s*define\s+\(domain\s+(\S+)\)", domain_text)
+    domain_name = name_match.group(1) if name_match else "unknown"
+
     # Types
     types_body = _get_body(domain_text, ":types")
-    types = set(types_body.split()) if types_body else set()
+    types = _parse_types(types_body)
 
     # Predicates
     predicates = parse_section(domain_text, ":predicates")
@@ -165,7 +198,12 @@ def extract_domain_sections(domain_text: str) -> dict[str, set[str]]:
         actions.add(_find_balanced(domain_text, idx))
         idx += 1
 
-    return {"types": types, "predicates": predicates, "actions": actions}
+    return {
+        "name": domain_name,
+        "types": types,
+        "predicates": predicates,
+        "actions": actions,
+    }
 
 
 def extract_normalized_problem(

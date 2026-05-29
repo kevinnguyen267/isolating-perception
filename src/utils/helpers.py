@@ -86,16 +86,17 @@ def setup_problem(
 
 def extract_dataset_info(
     dataset_problem_dir: Path,
-) -> tuple[List[Path], str]:
-    """Extract image paths and instruction from the dataset directory.
+) -> tuple[List[Path], List[Path], str]:
+    """Extract image paths, text paths (optional), and instruction from the dataset directory.
 
-    Returns: (image_paths, instruction)
+    Returns: (image_paths, text_paths, instruction)
     """
     image_paths = sorted((dataset_problem_dir / "observations").glob("img_*"))
     if not image_paths:
         raise FileNotFoundError(
             f"No images found in {dataset_problem_dir / 'observations'}"
         )
+    text_paths = sorted((dataset_problem_dir / "observations").glob("txt_*"))
     try:
         instruction = (dataset_problem_dir / "instruction.txt").read_text()
     except FileNotFoundError:
@@ -103,7 +104,8 @@ def extract_dataset_info(
             f"No instruction found in {dataset_problem_dir / 'instruction.txt'}"
         )
 
-    return image_paths, instruction
+    return image_paths, text_paths, instruction
+
 
 def assemble_pddl_problem(
     init_response: str,

@@ -1,8 +1,10 @@
 from modes import (
     formalizer_direct,
-    formalizer_int_pddl,
-    formalizer_int_sg,
+    formalizer_direct_explicit_angles,
+    formalizer_direct_explicit_angles_simple,
     planner,
+    planner_explicit_angles,
+    planner_explicit_angles_simple,
 )
 
 MODE_REGISTRY: dict[str, dict] = {
@@ -10,17 +12,25 @@ MODE_REGISTRY: dict[str, dict] = {
         "kind": "formalizer",
         "module": formalizer_direct,
     },
-    "formalizer-intermediate-sg": {
-        "kind": "formalizer",
-        "module": formalizer_int_sg,
-    },
-    "formalizer-intermediate-pddl": {
-        "kind": "formalizer",
-        "module": formalizer_int_pddl,
-    },
     "planner": {
         "kind": "planner",
         "module": planner,
+    },
+    "formalizer-direct-explicit-angles": {
+        "kind": "formalizer",
+        "module": formalizer_direct_explicit_angles,
+    },
+    "planner-explicit-angles": {
+        "kind": "planner",
+        "module": planner_explicit_angles,
+    },
+    "formalizer-direct-explicit-angles-simple": {
+        "kind": "formalizer",
+        "module": formalizer_direct_explicit_angles_simple,
+    },
+    "planner-explicit-angles-simple": {
+        "kind": "planner",
+        "module": planner_explicit_angles_simple,
     },
 }
 

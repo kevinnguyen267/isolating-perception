@@ -1,4 +1,5 @@
 import base64
+import os
 from pathlib import Path
 from typing import List
 
@@ -32,8 +33,15 @@ def image_block(path: Path) -> dict:
     }
 
 
-def get_client(model_id: str):
+def get_client(model_id: str, use_openrouter: bool = False):
     """Return an OpenAI client configured for the specified model."""
+    if use_openrouter:
+        if not os.getenv("OPENROUTER_API_KEY"):
+            raise ValueError("OPENROUTER_API_KEY environment variable is not set.")
+        return OpenAI(
+            api_key=os.environ["OPENROUTER_API_KEY"],
+            base_url="https://openrouter.ai/api/v1",
+        )
     return (
         OpenAI()
         if model_id.startswith("gpt")
@@ -43,6 +51,7 @@ def get_client(model_id: str):
 
 def _create_completion(
     client: OpenAI,
+    use_openrouter: bool,
     model_id: str,
     messages: list,
     max_tokens: int,
@@ -50,13 +59,20 @@ def _create_completion(
     seed: int,
 ) -> ChatCompletion:
     """Create a chat completion using the appropriate client for the model."""
+    if use_openrouter:
+        return client.chat.completions.create(
+            model=model_id,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            seed=seed,
+        )
+
     if model_id.startswith("gpt"):
         return client.chat.completions.create(
             model=model_id,
             messages=messages,
             max_completion_tokens=max_tokens,
-            temperature=temperature,
-            seed=seed,
         )
     elif model_id == "Qwen/Qwen3.5-122B-A10B":
         # Recommended parameters for "thinking mode for general tasks" /
@@ -76,6 +92,14 @@ def _create_completion(
                 "chat_template_kwargs": {"enable_thinking": False},
             },
         )
+        # return client.chat.completions.create(
+        #     model=model_id,
+        #     messages=messages,
+        #     max_tokens=max_tokens,
+        #     temperature=temperature,
+        #     seed=seed,
+        #     extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        # )
     else:
         return client.chat.completions.create(
             model=model_id,
@@ -88,21 +112,21 @@ def _create_completion(
 
 def generate_response(
     model_id: str,
+    use_openrouter: bool,
     user_content: List[dict],
     max_tokens: int,
     temperature: float,
     seed: int,
 ) -> str:
     """Generate a response using GPT (api_key) or local vLLM (base_url)."""
-    client = get_client(model_id)
+    client = get_client(model_id, use_openrouter)
 
     messages = [{"role": "user", "content": user_content}]
     response = _create_completion(
-        client, model_id, messages, max_tokens, temperature, seed
+        client, use_openrouter, model_id, messages, max_tokens, temperature, seed
     )
 
     if response.usage:
-        # print(f"    User content: {user_content}...")
         print(
             "    Usage - "
             f"Prompt: {response.usage.prompt_tokens}, "
