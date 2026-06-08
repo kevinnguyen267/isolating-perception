@@ -54,6 +54,17 @@ def _get_gt_domain_and_problem(
     return domain, normalized_problem, domain_path, output_problem_path
 
 
+def valid_problem_cost(prob_dir: Path, threshold: int = 5) -> bool:
+    """Filter out problems if the plan cost is below a certain threshold."""
+    plan_path = prob_dir / "plan.txt"
+    if plan_path.exists():
+        with plan_path.open() as f:
+            match = re.search(r"; cost = (\d+)", f.read())
+            if match and int(match.group(1)) >= threshold:
+                return True
+    return False
+
+
 def setup_problem(
     dataset_problem_dir: Path,
     output_dir: Path,
@@ -86,25 +97,20 @@ def setup_problem(
 
 def extract_dataset_info(
     dataset_problem_dir: Path,
-) -> tuple[List[Path], List[Path], str]:
-    """Extract image paths, text paths (optional), and instruction from the dataset directory.
-
-    Returns: (image_paths, text_paths, instruction)
-    """
-    image_paths = sorted((dataset_problem_dir / "observations").glob("img_*"))
-    if not image_paths:
+) -> tuple[List[Path], List[Path]]:
+    """Extract init and goal image paths from the dataset directory."""
+    init_paths = sorted((dataset_problem_dir / "observations").glob("init_*"))
+    if not init_paths:
         raise FileNotFoundError(
-            f"No images found in {dataset_problem_dir / 'observations'}"
+            f"No init images found in {dataset_problem_dir / 'observations'}"
         )
-    text_paths = sorted((dataset_problem_dir / "observations").glob("txt_*"))
-    try:
-        instruction = (dataset_problem_dir / "instruction.txt").read_text()
-    except FileNotFoundError:
+    goal_paths = sorted((dataset_problem_dir / "observations").glob("goal_*"))
+    if not goal_paths:
         raise FileNotFoundError(
-            f"No instruction found in {dataset_problem_dir / 'instruction.txt'}"
+            f"No goal images found in {dataset_problem_dir / 'observations'}"
         )
 
-    return image_paths, text_paths, instruction
+    return init_paths, goal_paths
 
 
 def assemble_pddl_problem(

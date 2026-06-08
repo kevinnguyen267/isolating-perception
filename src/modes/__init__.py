@@ -1,4 +1,5 @@
 from modes import (
+    formalizer,
     formalizer_direct,
     formalizer_direct_explicit_angles,
     formalizer_direct_explicit_angles_simple,
@@ -8,6 +9,10 @@ from modes import (
 )
 
 MODE_REGISTRY: dict[str, dict] = {
+    "formalizer": {
+        "kind": "formalizer",
+        "module": formalizer,
+    },
     "formalizer-direct": {
         "kind": "formalizer",
         "module": formalizer_direct,

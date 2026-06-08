@@ -1,5 +1,6 @@
 def get_hints(domain_name: str, img: bool = True) -> str:
     if domain_name not in (
+        "blocksworld",
         "blocksworld_front_side",
         "blocksworld_front_top",
         "kitchen",

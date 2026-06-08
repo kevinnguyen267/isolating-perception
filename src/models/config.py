@@ -32,7 +32,7 @@ MODEL_CONFIG = {
     "InternVL3.5-38B": {
         "model_id": "OpenGVLab/InternVL3_5-38B", 
         "vllm_serve_args": [
-            "-tp", "4",
+            "-tp", "2",
             "--max-model-len", "32768",
             "--trust-remote-code"
         ],

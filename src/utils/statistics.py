@@ -178,6 +178,11 @@ def get_eval_report_formalizer(
             for p in statistics_summary.values()
         ),
         "num_plans_passed": num_passed,
+        "problems_passed": [
+            name
+            for name, p in statistics_summary.items()
+            if p.get("plan_success", False)
+        ],
         "num_plans_failed": num_failed,
         "problems_failed": [
             name
