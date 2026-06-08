@@ -1,9 +1,6 @@
-"""VLM-as-formalizer"""
-
 from pathlib import Path
 from typing import List
 
-from modes._utils import get_hints
 from utils.parse import extract_domain_sections
 from utils.vlm import image_block
 
@@ -21,7 +18,9 @@ def build_grounded_prompt(
             "text": (
                 "Assume these two images show the exact same physical setup, and there are exactly 6 blocks: red, orange, yellow, green, blue, purple. "
                 "It is possible that a block is not visible in either image.\n\n"
-                f"{get_hints(domain['name'])}"  # type: ignore
+                "Hints:\n"
+                "- If no robot arm or gripper is visible in the image, assume the gripper is empty and not holding any object.\n"
+                "- The predicate (on ?x - block ?y - block) is defined as block x is on block y."
             ),
         },
         *(image_block(p) for p in image_paths),

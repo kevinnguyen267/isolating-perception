@@ -1,5 +1,3 @@
-"""VLM-as-planner"""
-
 from pathlib import Path
 from typing import List
 

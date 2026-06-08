@@ -1,8 +1,11 @@
 import base64
 import os
+import time
 from pathlib import Path
 from typing import List
 
+from google import genai
+from google.genai import types
 from models.config import VLLM_BASE_URL
 from openai import OpenAI
 from openai.types.chat import ChatCompletion
@@ -110,15 +113,197 @@ def _create_completion(
         )
 
 
-def generate_response(
+def _format_response(thinking: str, content: str) -> str:
+    """Combine thinking and content into a single string (thinking is optional)."""
+    if not thinking:
+        return content
+    return (
+        "=" * 80
+        + "\nTHINKING:\n"
+        + "=" * 80
+        + f"\n{thinking}\n\n"
+        + "=" * 80
+        + "\nRESPONSE:\n"
+        + "=" * 80
+        + f"\n{content}"
+    )
+
+
+def get_gemini_client() -> genai.Client:
+    """Return a client for the Gemini API."""
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "GEMINI_API_KEY (or GOOGLE_API_KEY) environment variable is not set."
+        )
+    return genai.Client(api_key=api_key)
+
+
+def _content_to_gemini_parts(user_content: List[dict]) -> List[types.Part]:
+    """Convert OpenAI-style content blocks into Gen AI SDK Parts."""
+    parts: List[types.Part] = []
+    for block in user_content:
+        block_type = block.get("type")
+        if block_type == "text":
+            parts.append(types.Part.from_text(text=block["text"]))
+        elif block_type == "image_url":
+            # Blocks are produced by image_block() as data:{mime};base64,{b64} URLs
+            url = block["image_url"]["url"]
+            header, _, data = url.partition(",")
+            mime_type = header.removeprefix("data:").split(";", 1)[0]
+            parts.append(
+                types.Part.from_bytes(data=base64.b64decode(data), mime_type=mime_type)
+            )
+        else:
+            raise ValueError(f"Unsupported content block type: {block_type!r}")
+    return parts
+
+
+def content_to_gemini_parts_dict(user_content: List[dict]) -> List[dict]:
+    """Convert OpenAI-style content blocks into REST-format Gemini part dicts."""
+    parts: List[dict] = []
+    for block in user_content:
+        block_type = block.get("type")
+        if block_type == "text":
+            parts.append({"text": block["text"]})
+        elif block_type == "image_url":
+            # Blocks are produced by image_block() as data:{mime};base64,{b64} URLs.
+            url = block["image_url"]["url"]
+            header, _, data = url.partition(",")
+            mime_type = header.removeprefix("data:").split(";", 1)[0]
+            parts.append({"inlineData": {"mimeType": mime_type, "data": data}})
+        else:
+            raise ValueError(f"Unsupported content block type: {block_type!r}")
+    return parts
+
+
+def gemini_generation_config_dict(
+    max_tokens: int, temperature: float, seed: int
+) -> dict:
+    """REST-format generationConfig mirroring the synchronous Gemini config."""
+    return {
+        "maxOutputTokens": max_tokens,
+        "temperature": temperature,
+        "seed": seed,
+        "thinkingConfig": {"includeThoughts": True},
+    }
+
+
+def parse_gemini_response_dict(response: dict) -> str:
+    """Parse a REST-format GenerateContentResponse dict into a single string."""
+    candidates = response.get("candidates") or []
+    if not candidates:
+        return ""
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+
+    thinking_parts: List[str] = []
+    content_parts: List[str] = []
+    for part in parts:
+        text = part.get("text")
+        if not text:
+            continue
+        if part.get("thought"):
+            thinking_parts.append(text)
+        else:
+            content_parts.append(text)
+
+    return _format_response("".join(thinking_parts), "".join(content_parts))
+
+
+def _generate_with_retries(
+    client: genai.Client,
     model_id: str,
-    use_openrouter: bool,
+    contents: List[types.Content],
+    config: types.GenerateContentConfig,
+    max_retries: int = 5,
+    initial_delay: float = 2.0,
+    max_delay: float = 60.0,
+    backoff_factor: float = 2.0,
+):
+    """Call Gemini generate_content, retrying transient errors with exponential backoff."""
+    delay = initial_delay
+    for attempt in range(1, max_retries + 1):
+        try:
+            return client.models.generate_content(
+                model=model_id,
+                contents=contents,  # type: ignore
+                config=config,
+            )
+        except Exception as e:
+            if attempt == max_retries:
+                raise
+            print(
+                f"    Gemini call failed (attempt {attempt}/{max_retries}): {e}. "
+                f"Retrying in {delay:.1f}s..."
+            )
+            time.sleep(delay)
+            delay = min(delay * backoff_factor, max_delay)
+
+
+def _generate_response_gemini(
+    model_id: str,
     user_content: List[dict],
     max_tokens: int,
     temperature: float,
     seed: int,
 ) -> str:
-    """Generate a response using GPT (api_key) or local vLLM (base_url)."""
+    """Generate a response using the Gemini Enterprise Agent Platform via API key."""
+    client = get_gemini_client()
+
+    contents = [
+        types.Content(role="user", parts=_content_to_gemini_parts(user_content))
+    ]
+    config = types.GenerateContentConfig(
+        max_output_tokens=max_tokens,
+        temperature=temperature,
+        seed=seed,
+        thinking_config=types.ThinkingConfig(include_thoughts=True),
+    )
+
+    response = _generate_with_retries(client, model_id, contents, config)
+
+    usage = response.usage_metadata  # type: ignore
+    if usage:
+        thoughts = getattr(usage, "thoughts_token_count", None)
+        thoughts_str = f"Thinking: {thoughts}, " if thoughts else ""
+        print(
+            "    Usage - "
+            f"Prompt: {usage.prompt_token_count}, "
+            f"Completion: {usage.candidates_token_count}, "
+            f"{thoughts_str}"
+            f"Total: {usage.total_token_count}"
+        )
+
+    thinking_parts: List[str] = []
+    content_parts: List[str] = []
+    for part in response.candidates[0].content.parts or []: # type: ignore
+        text = getattr(part, "text", None)
+        if not text:
+            continue
+        if getattr(part, "thought", False):
+            thinking_parts.append(text)
+        else:
+            content_parts.append(text)
+
+    return _format_response("".join(thinking_parts), "".join(content_parts))
+
+
+def generate_response(
+    model_id: str,
+    use_openrouter: bool,
+    use_gemini: bool,
+    user_content: List[dict],
+    max_tokens: int,
+    temperature: float,
+    seed: int,
+) -> str:
+    """Generate a response using the Gemini Agent Platform (Gen AI SDK), GPT/OpenRouter
+    (api_key), or local vLLM (base_url)."""
+    if use_gemini:
+        return _generate_response_gemini(
+            model_id, user_content, max_tokens, temperature, seed
+        )
+
     client = get_client(model_id, use_openrouter)
 
     messages = [{"role": "user", "content": user_content}]
@@ -138,15 +323,4 @@ def generate_response(
     thinking = getattr(message, "reasoning", None) or ""
     content = message.content or ""
 
-    return (
-        "=" * 80
-        + "\nTHINKING:\n"
-        + "=" * 80
-        + f"\n{thinking}\n\n"
-        + "=" * 80
-        + "\nRESPONSE:\n"
-        + "=" * 80
-        + f"\n{content}"
-        if thinking
-        else content
-    )
+    return _format_response(thinking, content)

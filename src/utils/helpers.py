@@ -54,7 +54,7 @@ def _get_gt_domain_and_problem(
     return domain, normalized_problem, domain_path, output_problem_path
 
 
-def valid_problem_cost(prob_dir: Path, threshold: int = 5) -> bool:
+def _valid_problem_cost(prob_dir: Path, threshold: int = 5) -> bool:
     """Filter out problems if the plan cost is below a certain threshold."""
     plan_path = prob_dir / "plan.txt"
     if plan_path.exists():
@@ -63,6 +63,18 @@ def valid_problem_cost(prob_dir: Path, threshold: int = 5) -> bool:
             if match and int(match.group(1)) >= threshold:
                 return True
     return False
+
+
+def get_problem_dirs(dataset_dir: Path, num_samples: int | None = None) -> List[Path]:
+    """Return the dataset's problem subdirectories, sorted by name."""
+    problem_dirs = [
+        p
+        for p in sorted(dataset_dir.iterdir())
+        if p.is_dir() and _valid_problem_cost(p)
+    ]
+    if num_samples is not None:
+        problem_dirs = problem_dirs[:num_samples]
+    return problem_dirs
 
 
 def setup_problem(

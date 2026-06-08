@@ -12,6 +12,7 @@ MODEL_CONFIG = {
     },
     "Gemini-3.1-Pro": {
         "openrouter_model_id": "google/gemini-3.1-pro-preview",
+        "gemini_model_id": "gemini-3.1-pro-preview",
     },
     "Qwen3.6-Plus": {
         "openrouter_model_id": "qwen/qwen3.6-plus",

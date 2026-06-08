@@ -33,21 +33,34 @@ source ../venv/bin/activate || {
 
 echo "[$(TZ="America/Los_Angeles" date)] (PID: $$) script started..."
 
-GPU="0,1,2,3"
-model_name="Qwen3.5-122B-A10B"
 dataset="blocksworld"
-# modes=("planner" "formalizer-direct" "formalizer-intermediate-sg" "formalizer-intermediate-pddl")
-modes=("formalizer-direct" "formalizer-intermediate-sg" "formalizer-intermediate-pddl")
+modes=("formalizer" "planner")
 
+# Run experiments using Gemini
+model_name="Gemini-3.1-Pro"
 for mode in "${modes[@]}"; do
     echo "[$(TZ="America/Los_Angeles" date)] Running experiment for ${dataset} (mode: ${mode}) on GPU ${GPU}..."
     CUDA_VISIBLE_DEVICES=${GPU} TZ="America/Los_Angeles" python -u src/main.py \
         --model_name ${model_name} \
         --dataset ${dataset} \
-        --mode ${mode}
+        --mode ${mode} \
+        --use_gemini --num_samples 10 &
 done
 
-python src/main.py --terminate_server
+# # Run experiments using local GPUs and vLLM
+# GPU="0,1,2,3"
+# model_names=("Qwen3.5-122B-A10B" "InternVL3.5-38B" "Gemma-4-31B")
+# model_name=${model_names[0]}
+# for mode in "${modes[@]}"; do
+#     echo "[$(TZ="America/Los_Angeles" date)] Running experiment for ${dataset} (mode: ${mode}) on GPU ${GPU}..."
+#     CUDA_VISIBLE_DEVICES=${GPU} TZ="America/Los_Angeles" python -u src/main.py \
+#         --model_name ${model_name} \
+#         --dataset ${dataset} \
+#         --mode ${mode}
+# done
+# python src/main.py --terminate_server
+
+wait
 
 echo "================================================================================"
 echo "[$(TZ="America/Los_Angeles" date)] All experiments complete."

@@ -7,7 +7,7 @@ from time import time
 from models.config import MODEL_CONFIG
 from models.vllm_server import ensure_vllm_server, kill_vllm_server
 from modes import ALL_MODES, get_mode
-from pipelines import batch_formalizer, batch_planner, synchronous
+from pipeline import run_pipeline
 from utils.helpers import seed_everything
 
 
@@ -59,10 +59,15 @@ def parse_args():
         help="Use OpenRouter for API requests (instead of OpenAI or vLLM server)",
     )
     parser.add_argument(
+        "--use_gemini",
+        action="store_true",
+        help="Use the Gemini Enterprise Agent Platform via API key (Google Gen AI SDK)",
+    )
+    parser.add_argument(
         "--batch",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Enable (--batch) or disable (--no-batch) batch processing for GPT models (only applicable if not using OpenRouter)",
+        help="Enable (--batch) or disable (--no-batch) batch processing for GPT (OpenAI Batch API) or Gemini (Gen AI batch) models (not applicable to OpenRouter)",
     )
     parser.add_argument(
         "--terminate_server",
@@ -74,6 +79,12 @@ def parse_args():
         type=int,
         default=42,
         help="Random seed for reproducibility",
+    )
+    parser.add_argument(
+        "--num_samples",
+        type=int,
+        default=None,
+        help="Only use the first num_samples in the dataset (default: all)",
     )
 
     return parser.parse_args()
@@ -104,9 +115,23 @@ def main():
     # Model setup
     if args.model_name not in MODEL_CONFIG:
         raise ValueError(f"Model {args.model_name} not found in MODEL_CONFIG")
+    if args.use_openrouter and args.use_gemini:
+        raise ValueError("Cannot use both --use_openrouter and --use_gemini.")
     if args.use_openrouter:
         model_id = MODEL_CONFIG[args.model_name]["openrouter_model_id"]
         use_batch = False
+    elif args.use_gemini:
+        if "gemini_model_id" not in MODEL_CONFIG[args.model_name]:
+            raise ValueError(
+                f"Model {args.model_name} has no 'gemini_model_id' configured "
+                "for the Gemini Enterprise Agent Platform."
+            )
+        if not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
+            raise EnvironmentError(
+                "GEMINI_API_KEY (or GOOGLE_API_KEY) environment variable not set."
+            )
+        model_id = MODEL_CONFIG[args.model_name]["gemini_model_id"]
+        use_batch = args.batch
     else:
         if "vllm_serve_args" in MODEL_CONFIG[args.model_name]:
             ensure_vllm_server(args.model_name)
@@ -130,17 +155,9 @@ def main():
         raise FileNotFoundError(f"Dataset directory not found: {dataset_dir}")
 
     # Run pipeline
-    if use_batch:
-        if kind == "planner":
-            batch_planner.main(args, mode_module, model_id, output_dir, dataset_dir)
-        else:
-            batch_formalizer.main(
-                args, mode_module, model_id, output_dir, dataset_dir, downward_dir
-            )
-    else:
-        synchronous.main(
-            args, mode_module, kind, model_id, output_dir, dataset_dir, downward_dir
-        )
+    run_pipeline(
+        args, mode_module, kind, model_id, output_dir, dataset_dir, downward_dir, use_batch
+    )
 
     print(f"Evaluation report saved to: {(output_dir / 'eval_report.json').resolve()}")
     print(f"Experiment complete ({int((time() - timer_start) / 60) + 1} minutes).")
