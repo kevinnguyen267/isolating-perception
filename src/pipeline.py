@@ -82,6 +82,7 @@ def _generate_responses(
             args.max_tokens,
             args.temperature,
             args.seed,
+            args.thinking,
         )
     return results
 

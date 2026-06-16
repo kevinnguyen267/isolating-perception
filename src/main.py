@@ -54,6 +54,12 @@ def parse_args():
         help="Sampling temperature for generation",
     )
     parser.add_argument(
+        "--thinking",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable (--thinking) or disable (--no-thinking) the model's thinking/reasoning mode",
+    )
+    parser.add_argument(
         "--use_openrouter",
         action="store_true",
         help="Use OpenRouter for API requests (instead of OpenAI or vLLM server)",
@@ -147,7 +153,10 @@ def main():
     mode_label = f"{'batch_' if use_batch else 'seq_'}{mode_str}"
     print(f"Running {args.dataset} using {model_id} ({mode_label})...")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path("results") / args.dataset / mode_str / args.model_name / timestamp
+    thinking_label = "_thinking" if args.thinking else "_no_thinking"
+    if args.use_gemini or args.model_name.lower().startswith("gpt"):
+        thinking_label = ""
+    output_dir = Path("results") / args.dataset / mode_str / f"{args.model_name}{thinking_label}" / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dataset_dir = Path("data") / args.dataset

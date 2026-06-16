@@ -35,7 +35,7 @@ MODEL_CONFIG = {
         "vllm_serve_args": [
             "-tp", "2",
             "--max-model-len", "32768",
-            "--trust-remote-code"
+            "--trust-remote-code",
         ],
     },
     "Gemma-4-31B": { 
@@ -44,6 +44,7 @@ MODEL_CONFIG = {
         "vllm_serve_args": [
             "-tp", "2",
             "--max-model-len", "32768",
+            "--reasoning-parser", "gemma4",
         ],
     }
 }

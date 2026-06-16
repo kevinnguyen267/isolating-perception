@@ -60,6 +60,7 @@ def _create_completion(
     max_tokens: int,
     temperature: float,
     seed: int,
+    thinking: bool,
 ) -> ChatCompletion:
     """Create a chat completion using the appropriate client for the model."""
     if use_openrouter:
@@ -92,17 +93,9 @@ def _create_completion(
                 "top_k": 20,
                 "min_p": 0.0,
                 "repetition_penalty": 1.0,
-                "chat_template_kwargs": {"enable_thinking": False},
+                "chat_template_kwargs": {"enable_thinking": thinking},
             },
         )
-        # return client.chat.completions.create(
-        #     model=model_id,
-        #     messages=messages,
-        #     max_tokens=max_tokens,
-        #     temperature=temperature,
-        #     seed=seed,
-        #     extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-        # )
     else:
         return client.chat.completions.create(
             model=model_id,
@@ -110,6 +103,9 @@ def _create_completion(
             max_tokens=max_tokens,
             temperature=temperature,
             seed=seed,
+            extra_body={
+                "chat_template_kwargs": {"enable_thinking": thinking},
+            },
         )
 
 
@@ -276,7 +272,7 @@ def _generate_response_gemini(
 
     thinking_parts: List[str] = []
     content_parts: List[str] = []
-    for part in response.candidates[0].content.parts or []: # type: ignore
+    for part in response.candidates[0].content.parts or []:  # type: ignore
         text = getattr(part, "text", None)
         if not text:
             continue
@@ -296,6 +292,7 @@ def generate_response(
     max_tokens: int,
     temperature: float,
     seed: int,
+    thinking: bool,
 ) -> str:
     """Generate a response using the Gemini Agent Platform (Gen AI SDK), GPT/OpenRouter
     (api_key), or local vLLM (base_url)."""
@@ -308,7 +305,14 @@ def generate_response(
 
     messages = [{"role": "user", "content": user_content}]
     response = _create_completion(
-        client, use_openrouter, model_id, messages, max_tokens, temperature, seed
+        client,
+        use_openrouter,
+        model_id,
+        messages,
+        max_tokens,
+        temperature,
+        seed,
+        thinking,
     )
 
     if response.usage:
@@ -320,7 +324,7 @@ def generate_response(
         )
 
     message = response.choices[0].message
-    thinking = getattr(message, "reasoning", None) or ""
+    thinking_content = getattr(message, "reasoning", None) or ""
     content = message.content or ""
 
-    return _format_response(thinking, content)
+    return _format_response(thinking_content, content)
