@@ -1,34 +1,13 @@
 import re
-from pathlib import Path
 
 # Alias to canonical name mapping
 ALIAS_MAP = {
-    "robot": "robot1",
-    "red": "red_block",
-    "orange": "orange_block",
-    "yellow": "yellow_block",
-    "green": "green_block",
-    "blue": "blue_block",
-    "purple": "purple_block",
-    "pink": "pink_block",
+    "robot": "robot_1",
 }
-
-
-def _parse_objects_file(filepath: Path) -> set[str]:
-    """Parse an objects text file and return a set of '(name - type)' strings."""
-    objects = set()
-    if not filepath.exists():
-        return objects
-    for line in filepath.read_text().strip().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split(" - ")
-        name = ALIAS_MAP.get(parts[0].strip(), parts[0].strip())
-        obj_type = parts[1].strip()
-        objects.add(f"({name} - {obj_type})")
-    objects.add("(robot1 - robot)")
-    return objects
+for color in ["red", "orange", "yellow", "green", "blue", "purple"]:
+    ALIAS_MAP[f"{color}"] = f"{color}_block"
+    for i in range(1, 18):
+        ALIAS_MAP[f"{color}_{i}"] = f"{color}_block_{i}"
 
 
 def _find_balanced(text: str, start_idx: int) -> str:
@@ -60,7 +39,7 @@ def _get_body(text: str, keyword: str) -> str:
 
 
 def _parse_objects(text: str) -> set[str]:
-    """Parse the :objects section and return a set of 'name - type' strings."""
+    """Parse the :objects section and return a set of '(name - type)' strings."""
     inner = _get_body(text, ":objects")
     # Split by whitespace and handle both formats. For example:
     # "<name> - <type>" -> objects.add("(<name> - <type>)")

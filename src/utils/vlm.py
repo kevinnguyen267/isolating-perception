@@ -6,10 +6,10 @@ from typing import List
 
 from google import genai
 from google.genai import types
-from models.config import VLLM_BASE_URL
 from openai import OpenAI
 from openai.types.chat import ChatCompletion
-from transformers import AutoTokenizer
+
+from models.config import VLLM_BASE_URL
 
 
 def _guess_mime_type(image_path: Path) -> str:
@@ -49,7 +49,7 @@ def get_client(model_id: str, use_openrouter: bool = False):
     return (
         OpenAI()
         if model_id.startswith("gpt")
-        else OpenAI(api_key="EMPTY", base_url=VLLM_BASE_URL)
+        else OpenAI(api_key="EMPTY", base_url=VLLM_BASE_URL, timeout=1800)
     )
 
 
@@ -320,20 +320,11 @@ def generate_response(
     thinking_content = getattr(message, "reasoning", None) or ""
     content = message.content or ""
 
-    details = getattr(response.usage, "completion_tokens_details", None)
-    reasoning_tokens = getattr(details, "reasoning_tokens", 0) if details else 0
-    reasoning_tokens_str = ""
-    if not reasoning_tokens and thinking_content:
-        tok = AutoTokenizer.from_pretrained(model_id)
-        reasoning_tokens = len(tok.encode(thinking_content, add_special_tokens=False))
-        reasoning_tokens_str = f"Thinking: {reasoning_tokens}, "
-
     if response.usage:
         print(
             "    Usage - "
             f"Prompt: {response.usage.prompt_tokens}, "
             f"Completion: {response.usage.completion_tokens}, "
-            f"{reasoning_tokens_str}"
             f"Total: {response.usage.total_tokens}"
         )
 

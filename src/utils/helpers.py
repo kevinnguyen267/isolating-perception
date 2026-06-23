@@ -1,6 +1,8 @@
 import os
 import random
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import List
 
@@ -75,6 +77,31 @@ def get_problem_dirs(dataset_dir: Path, num_samples: int | None = None) -> List[
     if num_samples is not None:
         problem_dirs = problem_dirs[:num_samples]
     return problem_dirs
+
+
+def verify_plans(dataset_dir: Path, downward_dir: Path):
+    """If they don't already exist, create plans for the given problem directories using Fast Downward."""
+    for prob_dir in sorted(dataset_dir.glob("problem_*")):
+        domain_path = prob_dir.parent / "domain.pddl"
+        problem_path = prob_dir / "problem.pddl"
+        plan_path = prob_dir / "plan.txt"
+        if not plan_path.exists():
+            with tempfile.TemporaryDirectory() as tmpdir:
+                subprocess.run(
+                    [
+                        "python3",
+                        str(downward_dir / "fast-downward.py"),
+                        "--sas-file",
+                        f"{tmpdir}/output.sas",
+                        "--plan-file",
+                        str(plan_path),
+                        str(domain_path),
+                        str(problem_path),
+                        "--search",
+                        "astar(blind())",
+                    ],
+                    capture_output=True,
+                )
 
 
 def setup_problem(

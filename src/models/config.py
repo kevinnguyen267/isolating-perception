@@ -22,7 +22,7 @@ MODEL_CONFIG = {
         "openrouter_model_id": "qwen/qwen3.5-122b-a10b",
         "vllm_serve_args": [
             "-tp", "4",
-            "--max-model-len", "131072",
+            "--max-model-len", "40960",
             "--enable-expert-parallel",
             "--mm-encoder-tp-mode", "data",
             "--mm-processor-cache-type", "shm",
@@ -36,7 +36,7 @@ MODEL_CONFIG = {
         "vllm_serve_args": [
             "-tp", "2",
             "-dp", "2",
-            "--max-model-len", "131072",
+            "--max-model-len", "40960",
             "--reasoning-parser", "gemma4",
         ],
     }

@@ -14,6 +14,7 @@ from utils.helpers import (
     setup_problem,
 )
 from utils.parse import (
+    extract_normalized_problem,
     extract_output_from_response,
     normalize_plan,
     normalize_problem,
@@ -25,17 +26,6 @@ from utils.statistics import (
     get_eval_report_planner,
 )
 from utils.vlm import generate_response
-
-# TODO: object set is currently hardcoded for blocksworld
-_BLOCKSWORLD_OBJECTS = {
-    "red - block",
-    "orange - block",
-    "yellow - block",
-    "green - block",
-    "blue - block",
-    "purple - block",
-    "robot1 - robot",
-}
 
 
 def _generate_responses(
@@ -135,7 +125,9 @@ def _generate_responses(
             print(f"  Done {custom_id} ({len(results)}/{len(requests)})")
     n_failed = sum(1 for v in results.values() if not v)
     if n_failed:
-        print(f"  WARNING: {n_failed}/{len(requests)} requests failed (empty response).")
+        print(
+            f"  WARNING: {n_failed}/{len(requests)} requests failed (empty response)."
+        )
     return results
 
 
@@ -191,7 +183,7 @@ def _run_planner(args, mode_module, model_id, output_dir, dataset_dir, use_batch
 
         init_paths, goal_paths = extract_dataset_info(dataset_problem_dir)
 
-        prompt = mode_module.build_prompt(gt_domain, init_paths, goal_paths)
+        prompt = mode_module.build_prompt(gt_domain, gt_problem, init_paths, goal_paths)
         (output_problem_dir / "prompt.txt").write_text(json.dumps(prompt, indent=4))
 
         requests.append((f"{name}__plan", prompt))
@@ -262,25 +254,30 @@ def _run_formalizer(
         ) = setup_problem(dataset_problem_dir, output_dir)
 
         init_paths, goal_paths = extract_dataset_info(dataset_problem_dir)
-        
-        init_prompt = mode_module.build_grounded_prompt(gt_domain, init_paths)
+
+        init_prompt = mode_module.build_grounded_prompt(
+            gt_domain, gt_problem, init_paths
+        )
         (output_problem_dir / "init_prompt.txt").write_text(
             json.dumps(init_prompt, indent=4)
         )
         requests.append((f"{name}__init", init_prompt))
-        
-        goal_prompt = mode_module.build_grounded_prompt(gt_domain, goal_paths)
+
+        goal_prompt = mode_module.build_grounded_prompt(
+            gt_domain, gt_problem, goal_paths
+        )
         (output_problem_dir / "goal_prompt.txt").write_text(
             json.dumps(goal_prompt, indent=4)
         )
         requests.append((f"{name}__goal", goal_prompt))
-        
+
         problem_meta[name] = {
             "output_problem_dir": output_problem_dir,
             "gt_domain": gt_domain,
             "gt_problem": gt_problem,
             "gt_domain_path": gt_domain_path,
             "gt_problem_path": gt_problem_path,
+            "objects": extract_normalized_problem(gt_problem)[2],
         }
 
     if not requests:
@@ -320,7 +317,7 @@ def _run_formalizer(
         ) = assemble_pddl_problem(
             init_response,
             goal_response,
-            set(_BLOCKSWORLD_OBJECTS),
+            meta["objects"],
             gt_domain,
             gt_problem,
         )
