@@ -165,9 +165,9 @@ def main():
 
     # Output directory
     mode_label = f"{'batch_' if use_batch else 'seq_'}{mode_str}"
-    print(f"Running {args.dataset} using {model_id} ({mode_label})...")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     thinking_label = "_thinking" if args.thinking else "_no_thinking"
+    print(f"Running {args.dataset} using {args.model_name}{thinking_label} ({mode_label})...")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.use_gemini or args.model_name.lower().startswith("gpt"):
         thinking_label = ""
     output_dir = (

@@ -3,6 +3,7 @@ import random
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import List
 
@@ -81,27 +82,49 @@ def get_problem_dirs(dataset_dir: Path, num_samples: int | None = None) -> List[
 
 def verify_plans(dataset_dir: Path, downward_dir: Path):
     """If they don't already exist, create plans for the given problem directories using Fast Downward."""
+    start_time = time.time()
+    plans_created = False
     for prob_dir in sorted(dataset_dir.glob("problem_*")):
         domain_path = prob_dir.parent / "domain.pddl"
         problem_path = prob_dir / "problem.pddl"
         plan_path = prob_dir / "plan.txt"
         if not plan_path.exists():
+            plans_created = True
+            print(
+                f"New dataset problem found. Generating ground truth plan for {prob_dir.name}..."
+            )
             with tempfile.TemporaryDirectory() as tmpdir:
-                subprocess.run(
+                result = subprocess.run(
                     [
                         "python3",
                         str(downward_dir / "fast-downward.py"),
+                        "--alias",
+                        "lama-first",
+                        "--overall-memory-limit",
+                        "4G",
+                        "--search-time-limit",
+                        "60",
                         "--sas-file",
                         f"{tmpdir}/output.sas",
                         "--plan-file",
                         str(plan_path),
                         str(domain_path),
                         str(problem_path),
-                        "--search",
-                        "astar(blind())",
                     ],
                     capture_output=True,
+                    text=True,
                 )
+                if not plan_path.exists():
+                    print(
+                        f"ERROR: No plan generated for {prob_dir.name} "
+                        f"(rc={result.returncode}). Exiting."
+                    )
+                    exit(1)
+    if plans_created:
+        end_time = time.time()
+        print(
+            f"Plan verification completed in {round(end_time - start_time)} seconds."
+        )
 
 
 def setup_problem(
