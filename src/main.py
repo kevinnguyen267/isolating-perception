@@ -44,7 +44,7 @@ def parse_args():
     parser.add_argument(
         "--max_tokens",
         type=int,
-        default=8192,
+        default=32768,
         help="Maximum number of tokens to generate",
     )
     parser.add_argument(
@@ -91,6 +91,18 @@ def parse_args():
         type=int,
         default=None,
         help="Only use the first num_samples in the dataset (default: all)",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=64,
+        help="Number of concurrent requests for local vLLM generation.",
+    )
+    parser.add_argument(
+        "--processing_workers",
+        type=int,
+        default=None,
+        help="Number of parallel workers for processing results. Defaults to min(CPU count, number of dataset samples)."
     )
 
     return parser.parse_args()

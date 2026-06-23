@@ -22,7 +22,7 @@ MODEL_CONFIG = {
         "openrouter_model_id": "qwen/qwen3.5-122b-a10b",
         "vllm_serve_args": [
             "-tp", "4",
-            "--max-model-len", "65536",
+            "--max-model-len", "131072",
             "--enable-expert-parallel",
             "--mm-encoder-tp-mode", "data",
             "--mm-processor-cache-type", "shm",
@@ -30,20 +30,13 @@ MODEL_CONFIG = {
             "--reasoning-parser", "qwen3",
         ],
     },
-    "InternVL3.5-38B": {
-        "model_id": "OpenGVLab/InternVL3_5-38B", 
-        "vllm_serve_args": [
-            "-tp", "2",
-            "--max-model-len", "32768",
-            "--trust-remote-code",
-        ],
-    },
     "Gemma-4-31B": { 
         "model_id": "google/gemma-4-31B-it",
         "openrouter_model_id": "google/gemma-4-31b-it",
         "vllm_serve_args": [
             "-tp", "2",
-            "--max-model-len", "32768",
+            "-dp", "2",
+            "--max-model-len", "131072",
             "--reasoning-parser", "gemma4",
         ],
     }

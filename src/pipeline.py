@@ -1,4 +1,7 @@
 import json
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from plans.find_plan import find_plan
@@ -71,20 +74,104 @@ def _generate_responses(
             use_gemini=args.use_gemini,
         )
 
+    def _one(
+        custom_id: str,
+        prompt: list[dict],
+        max_retries: int = 5,
+        initial_delay: float = 2.0,
+        max_delay: float = 60.0,
+        backoff_factor: float = 2.0,
+    ) -> str:
+        delay = initial_delay
+        for attempt in range(1, max_retries + 1):
+            try:
+                return generate_response(
+                    model_id,
+                    args.use_openrouter,
+                    args.use_gemini,
+                    prompt,
+                    args.max_tokens,
+                    args.temperature,
+                    args.seed,
+                    args.thinking,
+                )
+            except Exception as e:
+                if attempt == max_retries:
+                    raise
+                print(
+                    f"  {custom_id} failed (attempt {attempt}/{max_retries}): {e!r}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+                time.sleep(delay)
+                delay = min(delay * backoff_factor, max_delay)
+        raise RuntimeError("Unreachable")
+
+    # Use concurrency for local vLLM
+    is_vllm = not (
+        args.use_openrouter or args.use_gemini or model_id.lower().startswith("gpt")
+    )
+    concurrency = max(1, getattr(args, "concurrency", 1)) if is_vllm else 1
+
     results: dict[str, str] = {}
-    for custom_id, prompt in requests:
-        print(f"  Generating {custom_id}...")
-        results[custom_id] = generate_response(
-            model_id,
-            args.use_openrouter,
-            args.use_gemini,
-            prompt,
-            args.max_tokens,
-            args.temperature,
-            args.seed,
-            args.thinking,
-        )
+    if concurrency == 1:
+        for custom_id, prompt in requests:
+            print(f"  Generating {custom_id}...")
+            results[custom_id] = _one(custom_id, prompt)
+        return results
+
+    print(f"  Generating {len(requests)} requests (concurrency={concurrency})...")
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        future_to_id = {
+            executor.submit(_one, custom_id, prompt): custom_id
+            for custom_id, prompt in requests
+        }
+        for future in as_completed(future_to_id):
+            custom_id = future_to_id[future]
+            try:
+                results[custom_id] = future.result()
+            except Exception as e:
+                print(f"  ERROR: {custom_id} failed after all retries: {e!r}")
+                results[custom_id] = ""
+            print(f"  Done {custom_id} ({len(results)}/{len(requests)})")
+    n_failed = sum(1 for v in results.values() if not v)
+    if n_failed:
+        print(f"  WARNING: {n_failed}/{len(requests)} requests failed (empty response).")
     return results
+
+
+def _process_in_parallel(
+    items: list[tuple[str, dict]],
+    process_one,
+    report_fn,
+    output_dir: Path,
+    max_workers: int | None,
+) -> dict[str, dict]:
+    """Run process_one(name, meta) for every problem in parallel."""
+    n = len(items)
+    cap = max_workers if max_workers and max_workers > 0 else (os.cpu_count() or 1)
+    workers = min(n, cap)
+    print(f"Processing results ({n} problems, workers={workers})...")
+
+    statistics_summary: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_name = {
+            executor.submit(process_one, name, meta): name for name, meta in items
+        }
+        for future in as_completed(future_to_name):
+            name = future_to_name[future]
+            try:
+                statistics_summary[name] = future.result()
+            except Exception as e:
+                print(f"  ERROR processing {name}: {e!r}")
+                statistics_summary[name] = {"plan_success": False}
+            print(f"  Done {name} ({len(statistics_summary)}/{n})")
+            with open(output_dir / "eval_report.json", "w") as f:
+                json.dump(report_fn(statistics_summary), f, indent=4)
+
+    ordered = {name: statistics_summary[name] for name, _ in items}
+    with open(output_dir / "eval_report.json", "w") as f:
+        json.dump(report_fn(ordered), f, indent=4)
+    return ordered
 
 
 def _run_planner(args, mode_module, model_id, output_dir, dataset_dir, use_batch):
@@ -127,16 +214,14 @@ def _run_planner(args, mode_module, model_id, output_dir, dataset_dir, use_batch
         description=f"planner_{args.dataset}",
     )
 
-    print("Processing results...")
-    statistics_summary: dict[str, dict] = {}
-    for name, meta in problem_meta.items():
-        statistics_summary[name] = {}
+    def _process_one(name: str, meta: dict) -> dict:
+        stats: dict = {}
 
         response = results.get(f"{name}__plan", "")
         if not response:
             print(f"  WARNING: no response for {name}, skipping.")
-            statistics_summary[name]["plan_success"] = False
-            continue
+            stats["plan_success"] = False
+            return stats
 
         output_problem_dir = meta["output_problem_dir"]
         _, plan_str = extract_output_from_response(response)
@@ -147,11 +232,16 @@ def _run_planner(args, mode_module, model_id, output_dir, dataset_dir, use_batch
         plan_success, _ = validate_plan(
             meta["gt_domain_path"], meta["gt_problem_path"], plan
         )
-        statistics_summary[name]["plan_success"] = plan_success
+        stats["plan_success"] = plan_success
+        return stats
 
-        eval_report = get_eval_report_planner(statistics_summary)
-        with open(output_dir / "eval_report.json", "w") as f:
-            json.dump(eval_report, f, indent=4)
+    _process_in_parallel(
+        list(problem_meta.items()),
+        _process_one,
+        get_eval_report_planner,
+        output_dir,
+        max_workers=getattr(args, "processing_workers", None),
+    )
 
 
 def _run_formalizer(
@@ -206,17 +296,15 @@ def _run_formalizer(
         description=f"formalizer_{args.dataset}",
     )
 
-    print("Processing results...")
-    statistics_summary: dict[str, dict] = {}
-    for name, meta in problem_meta.items():
-        statistics_summary[name] = {}
+    def _process_one(name: str, meta: dict) -> dict:
+        stats: dict = {}
 
         init_response = results.get(f"{name}__init", "")
         goal_response = results.get(f"{name}__goal", "")
         if not init_response or not goal_response:
             print(f"  WARNING: missing response for {name}, skipping.")
-            statistics_summary[name]["plan_success"] = False
-            continue
+            stats["plan_success"] = False
+            return stats
 
         gt_domain = meta["gt_domain"]
         gt_problem = meta["gt_problem"]
@@ -252,18 +340,18 @@ def _run_formalizer(
         # Solve the generated problem using Fast Downward and validate if successful
         downward_success, _, plan = find_plan(gt_domain, problem, downward_dir)
         if not downward_success:
-            statistics_summary[name]["downward_success"] = False
+            stats["downward_success"] = False
             plan_success = False
         else:
             plan = normalize_plan(plan)
             (output_problem_dir / "plan.txt").write_text(plan)
 
             plan_success, _ = validate_plan(gt_domain_path, gt_problem_path, plan)
-            statistics_summary[name]["plan_success"] = plan_success
+            stats["plan_success"] = plan_success
 
         # Determine whether the plan failed due to init or goal state
         if not plan_success:
-            statistics_summary[name].update(
+            stats.update(
                 compute_plan_success_with_ground_truth(
                     gt_problem,
                     problem,
@@ -275,14 +363,16 @@ def _run_formalizer(
             )
 
         # Record precision, recall, and F1 statistics
-        statistics_summary[name].update(
-            compute_precision_recall_f1(gt_problem, problem)
-        )
+        stats.update(compute_precision_recall_f1(gt_problem, problem))
+        return stats
 
-        # Save evaluation report
-        eval_report = get_eval_report_formalizer(statistics_summary)
-        with open(output_dir / "eval_report.json", "w") as f:
-            json.dump(eval_report, f, indent=4)
+    _process_in_parallel(
+        list(problem_meta.items()),
+        _process_one,
+        get_eval_report_formalizer,
+        output_dir,
+        max_workers=getattr(args, "processing_workers", None),
+    )
 
 
 def run_pipeline(

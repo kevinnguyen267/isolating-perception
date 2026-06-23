@@ -1,8 +1,11 @@
+import threading
 from pathlib import Path
 
 from unified_planning.engines import SequentialPlanValidator
 from unified_planning.io import PDDLReader
 from unified_planning.plans import ActionInstance, SequentialPlan
+
+_UP_LOCK = threading.Lock()
 
 
 def _parse_fast_downward_plan(plan: str) -> list[tuple[str, list[str]]]:
@@ -53,18 +56,19 @@ def validate_plan(
     domain_path_str = str(domain_path)
     problem_path_str = str(problem_path)
 
-    # Parse the domain and problem files to get a unified planning problem object
-    problem = PDDLReader().parse_problem(domain_path_str, problem_path_str)
-
     # Parse the plan file to get a list of (action_name, [args]) tuples
     parsed_actions = _parse_fast_downward_plan(plan)
 
-    try:
-        plan = _build_plan(problem, parsed_actions)
-    except Exception as e:
-        return False, [str(e)]
+    with _UP_LOCK:
+        # Parse the domain and problem files to get a unified planning problem object
+        problem = PDDLReader().parse_problem(domain_path_str, problem_path_str)
 
-    with SequentialPlanValidator(problem_kind=problem.kind) as validator:
-        result = validator.validate(problem, plan)
+        try:
+            plan = _build_plan(problem, parsed_actions)
+        except Exception as e:
+            return False, [str(e)]
+
+        with SequentialPlanValidator(problem_kind=problem.kind) as validator:
+            result = validator.validate(problem, plan)
 
     return result.status.name == "VALID", [str(msg) for msg in result.log_messages]
