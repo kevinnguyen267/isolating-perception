@@ -48,30 +48,11 @@ def _parse_cost(last_line: str) -> float:
     return float("inf")
 
 
-def _run_downward(command: str, plan_path: Path) -> Tuple[bool, str, str]:
-    """
-    Execute Fast Downward and return the best plan found.
-
-    Returns:
-        (success, error_message, plan_text)
-    """
-    try:
-        subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
-    except subprocess.CalledProcessError as exc:
-        # If Fast Downward fails, return error message
-        raw = getattr(exc, "output", b"")
-        output = raw.decode(errors="replace").strip() if raw else str(exc)
-
-        if "Search stopped without finding a solution" in output:
-            return False, "Search stopped without finding a solution.", ""
-        if "Driver aborting after search" in output:
-            return False, "Search stopped early due to time limit.", ""
-        return False, f"...{output[-500:]}", ""
-
-    # Select plan with lowest cost from generated plan files
+def _select_best_plan(plan_path: Path) -> str | None:
+    """Return the lowest-cost plan among generated plan files, or None if there are none."""
     plan_files = list(plan_path.parent.glob(f"{plan_path.name}.*"))
     if not plan_files:
-        return False, "Fast Downward exited successfully but produced no plan file.", ""
+        return None
 
     best_cost = float("inf")
     best_plan = None
@@ -85,14 +66,40 @@ def _run_downward(command: str, plan_path: Path) -> Tuple[bool, str, str]:
                 line.strip() for line in lines[:-1]
             )  # Strip the trailing cost comment
 
-    if best_plan is None:
-        return False, "No valid plan found in output files.", ""
+    return best_plan
 
-    return True, "", best_plan
+
+def _run_downward(command: str, plan_path: Path) -> Tuple[bool, str, str]:
+    """
+    Execute Fast Downward and return the best plan found.
+
+    Returns:
+        (success, error_message, plan_text)
+    """
+    try:
+        subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT)
+        output = ""
+    except subprocess.CalledProcessError as exc:
+        raw = getattr(exc, "output", b"")
+        output = raw.decode(errors="replace").strip() if raw else str(exc)
+
+    # Select plan with lowest cost from generated plan files, regardless of exit code
+    # since Fast Downward may exit with a non-zero code even if a plan was found.
+    best_plan = _select_best_plan(plan_path)
+    if best_plan is not None:
+        return True, "", best_plan
+
+    if "Search stopped without finding a solution" in output:
+        return False, "Search stopped without finding a solution.", ""
+    if "Driver aborting after search" in output:
+        return False, "Search stopped early due to time limit.", ""
+    if output:
+        return False, f"...{output[-500:]}", ""
+    return False, "Fast Downward exited successfully but produced no plan file.", ""
 
 
 def find_plan(
-    domain: str, problem: str, downward_dir: Path, time_limit: int = 20
+    domain: str, problem: str, downward_dir: Path, time_limit: int = 60
 ) -> Tuple[bool, str, str]:
     """
     Finds a plan using Fast Downward.
