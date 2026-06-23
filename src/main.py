@@ -8,7 +8,7 @@ from models.config import MODEL_CONFIG
 from models.vllm_server import ensure_vllm_server, kill_vllm_server
 from modes import ALL_MODES, get_mode
 from pipeline import run_pipeline
-from utils.helpers import seed_everything
+from utils.helpers import seed_everything, verify_plans
 
 
 def parse_args():
@@ -102,7 +102,7 @@ def parse_args():
         "--processing_workers",
         type=int,
         default=None,
-        help="Number of parallel workers for processing results. Defaults to min(CPU count, number of dataset samples)."
+        help="Number of parallel workers for processing results. Defaults to min(CPU count, number of dataset samples).",
     )
 
     return parser.parse_args()
@@ -157,7 +157,9 @@ def main():
             if "OPENAI_API_KEY" not in os.environ:
                 raise EnvironmentError("OPENAI_API_KEY environment variable not set.")
         else:
-            raise ValueError(f"Model {args.model_name} is not configured for vLLM serving or OpenAI API.")
+            raise ValueError(
+                f"Model {args.model_name} is not configured for vLLM serving or OpenAI API."
+            )
         model_id = MODEL_CONFIG[args.model_name]["model_id"]
         use_batch = args.batch and args.model_name.lower().startswith("gpt")
 
@@ -168,16 +170,31 @@ def main():
     thinking_label = "_thinking" if args.thinking else "_no_thinking"
     if args.use_gemini or args.model_name.lower().startswith("gpt"):
         thinking_label = ""
-    output_dir = Path("results") / args.dataset / mode_str / f"{args.model_name}{thinking_label}" / timestamp
+    output_dir = (
+        Path("results")
+        / args.dataset
+        / mode_str
+        / f"{args.model_name}{thinking_label}"
+        / timestamp
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Verify dataset dir and create plans if they don't exist
     dataset_dir = Path("data") / args.dataset
     if not dataset_dir.exists():
         raise FileNotFoundError(f"Dataset directory not found: {dataset_dir}")
+    verify_plans(dataset_dir, downward_dir)
 
     # Run pipeline
     run_pipeline(
-        args, mode_module, kind, model_id, output_dir, dataset_dir, downward_dir, use_batch
+        args,
+        mode_module,
+        kind,
+        model_id,
+        output_dir,
+        dataset_dir,
+        downward_dir,
+        use_batch,
     )
 
     print(f"Evaluation report saved to: {(output_dir / 'eval_report.json').resolve()}")
