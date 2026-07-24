@@ -101,6 +101,7 @@ def _generate_responses(
         args.use_openrouter or args.use_gemini or model_id.lower().startswith("gpt")
     )
     concurrency = max(1, getattr(args, "concurrency", 1)) if is_vllm else 1
+    concurrency = min(concurrency, len(requests))
 
     results: dict[str, str] = {}
     if concurrency == 1:
@@ -183,7 +184,7 @@ def _run_planner(args, mode_module, model_id, output_dir, dataset_dir, use_batch
 
         init_paths, goal_paths = extract_dataset_info(dataset_problem_dir)
 
-        prompt = mode_module.build_prompt(gt_domain, gt_problem, init_paths, goal_paths)
+        prompt = mode_module.build_prompt(gt_domain, gt_problem, init_paths, goal_paths, args.dataset)
         (output_problem_dir / "prompt.txt").write_text(json.dumps(prompt, indent=4))
 
         requests.append((f"{name}__plan", prompt))
@@ -216,7 +217,7 @@ def _run_planner(args, mode_module, model_id, output_dir, dataset_dir, use_batch
             return stats
 
         output_problem_dir = meta["output_problem_dir"]
-        _, plan_str = extract_output_from_response(response)
+        _, plan_str = extract_output_from_response(response, args.mode)
         plan = normalize_plan(plan_str)
         (output_problem_dir / "plan.txt").write_text(plan)
         (output_problem_dir / "response.txt").write_text(response)
@@ -256,7 +257,7 @@ def _run_formalizer(
         init_paths, goal_paths = extract_dataset_info(dataset_problem_dir)
 
         init_prompt = mode_module.build_grounded_prompt(
-            gt_domain, gt_problem, init_paths
+            gt_domain, gt_problem, init_paths, args.dataset
         )
         (output_problem_dir / "init_prompt.txt").write_text(
             json.dumps(init_prompt, indent=4)
@@ -264,7 +265,7 @@ def _run_formalizer(
         requests.append((f"{name}__init", init_prompt))
 
         goal_prompt = mode_module.build_grounded_prompt(
-            gt_domain, gt_problem, goal_paths
+            gt_domain, gt_problem, goal_paths, args.dataset
         )
         (output_problem_dir / "goal_prompt.txt").write_text(
             json.dumps(goal_prompt, indent=4)
@@ -320,6 +321,7 @@ def _run_formalizer(
             meta["objects"],
             gt_domain,
             gt_problem,
+            args.mode,
         )
         problem = normalize_problem(problem)
         (output_problem_dir / "problem.pddl").write_text(problem)

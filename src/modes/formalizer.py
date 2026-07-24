@@ -9,10 +9,20 @@ def build_grounded_prompt(
     domain_text: str,
     problem_text: str,
     image_paths: List[Path],
+    dataset: str,
 ) -> List[dict]:
     """Return prompt for directly generating the grounded predicates from provided images."""
     domain = extract_domain_sections(domain_text)
     objects = extract_normalized_problem(problem_text)[2]
+    naming_hint = "\n\n"
+    if "(blue_block_1 - block)" in objects:
+        naming_hint = "\nFor example, blue_block_1 refers to the blue colored block with the number '1' on it.\n\n"
+    hidden_object_hint = ""
+    if dataset == "blocksworld_hidden":
+        hidden_object_hint = (
+            "\n- Exactly one object is hidden from view in both images. The hidden object's location can be "
+            "inferred from the visible objects."
+        )
 
     return [
         {
@@ -22,15 +32,15 @@ def build_grounded_prompt(
                 "and two images of the same physical scene from different camera views.\n\n"
                 "Output the grounded predicates that are true in the scene.\n\n"
                 "Hints:\n"
-                "- If no robot arm or gripper is visible in the image, assume the gripper is empty and not holding any object.\n"
-                "- The predicate (on ?x - block ?y - block) is defined as block x is on block y.\n"
-                "- It is possible that a block is not visible in either image, but it still exists in the scene.\n"
+                "- If no robot arm or gripper is visible in the image, assume the gripper is empty and not holding any object."
+                f"{hidden_object_hint}"
             ),
         },
         {
             "type": "text",
             "text": (
-                f"Objects:\n{', '.join(sorted(objects))}\n\n"
+                f"Objects:\n{', '.join(sorted(objects))}"
+                f"{naming_hint}"
                 f"Predicates:\n{', '.join(sorted(domain['predicates']))}"
             ),
         },

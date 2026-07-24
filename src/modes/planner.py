@@ -10,21 +10,33 @@ def build_prompt(
     problem_text: str,
     init_paths: List[Path],
     goal_paths: List[Path],
+    dataset: str,
 ) -> List[dict]:
     """Return prompt for generating a plan (sequence of actions) to solve the task."""
     domain = extract_domain_sections(domain_text)
     objects = extract_normalized_problem(problem_text)[2]
+    naming_hint = "\n\n"
+    if "(blue_block_1 - block)" in objects:
+        naming_hint = "\nFor example, blue_block_1 refers to the blue colored block with the number '1' on it.\n\n"
+    hidden_object_hint = ""
+    if dataset == "blocksworld_hidden":
+        hidden_object_hint = (
+            "Hints:\n- Exactly one object is hidden from view in both images. The hidden object's location can be "
+            "inferred from the visible objects.\n\n"
+        )
 
     return [
         {
             "type": "text",
             "text": (
-                "You are a task planner. You are given a list of objects, a list of actions, "
+                "You are given a list of objects, a list of actions, "
                 "and two states: a current state and a target state. Each state is shown as two "
                 "images of the same physical scene from different camera views.\n\n"
                 "Output the ordered sequence of actions that transforms the current state into the "
                 "target state.\n\n"
-                f"Objects:\n{', '.join(sorted(objects))}\n\n"
+                f"{hidden_object_hint}"
+                f"Objects:\n{', '.join(sorted(objects))}"
+                f"{naming_hint}"
                 f"Actions:\n{', '.join(sorted(domain['actions']))}"
             ),
         },

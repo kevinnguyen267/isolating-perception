@@ -181,13 +181,14 @@ def assemble_pddl_problem(
     objects: set[str],
     gt_domain: str,
     gt_problem: str,
+    mode: str
 ) -> tuple[str, str, str]:
     """Assemble a PDDL problem from pre-obtained VLM responses.
 
     Returns: (problem, init_response_extracted, goal_response_extracted)
     """
-    init_preds, init_response_extracted = extract_output_from_response(init_response)
-    goal_preds, goal_response_extracted = extract_output_from_response(goal_response)
+    init_preds, init_response_extracted = extract_output_from_response(init_response, mode)
+    goal_preds, goal_response_extracted = extract_output_from_response(goal_response, mode)
 
     # Extract domain name from the ground truth domain file
     match = re.search(r"\(domain\s+(\w+)\)", gt_domain)

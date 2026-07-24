@@ -1,5 +1,7 @@
 import re
 
+from utils.spatial_solver import neighbors_to_pddl, resolve_spatial_relations
+
 # Alias to canonical name mapping
 ALIAS_MAP = {
     "robot": "robot_1",
@@ -93,7 +95,10 @@ def parse_section(text: str, section: str) -> set[str]:
     normalized = set()
     for p in predicates:
         tokens = p.strip("()").split()
-        args = [ALIAS_MAP.get(t, t) for t in tokens[1:]]
+        if section == ":predicates":
+            args = tokens[1:]
+        else:
+            args = [ALIAS_MAP.get(t, t) for t in tokens[1:]]
         normalized.add(f"({tokens[0]} {' '.join(args)})")  # type: ignore
 
     return normalized
@@ -247,22 +252,30 @@ def normalize_plan(plan_text: str) -> str:
     return "\n".join(normalized_lines)
 
 
-def extract_output_from_response(response: str) -> tuple[list[str], str]:
+def extract_output_from_response(response: str, mode: str) -> tuple[list[str], str]:
     """Extract the lines within the last code block of the response.
     Each line is formatted as '(<token0> <token1> <token2> ...)'.
     For output_str, the lines are joined with newlines.
 
     Returns: (output_lst, output_str)"""
-    output = []
+    if mode == "planner" or mode == "formalizer":
+        output = []
+        match = re.findall(r"```(?:\w+)?\n(.*?)```", response, re.DOTALL)
+        if match:
+            lines = match[-1].strip().splitlines()
+            for line in lines:
+                tokens = (
+                    line.replace("(", " ").replace(")", " ").replace(",", " ").split()
+                )
+                if tokens:
+                    output.append(f"({' '.join(tokens)})")
 
-    match = re.findall(r"```(?:\w+)?\n(.*?)```", response, re.DOTALL)
-    if match:
-        lines = match[-1].strip().splitlines()
-        for line in lines:
-            tokens = line.replace("(", " ").replace(")", " ").replace(",", " ").split()
-            if tokens:
-                output.append(f"({' '.join(tokens)})")
+        output_str = "\n".join(output)
+        return output, output_str
 
-    output_str = "\n".join(output)
+    matches = re.findall(r"<image[12]>(.*?)</image[12]>", response, re.DOTALL)
+    lines = [line for m in matches for line in m.strip().splitlines()]
+    output = neighbors_to_pddl(resolve_spatial_relations(lines))
+    output.add("(handempty robot_1)")
 
-    return output, output_str
+    return list(output), "\n".join(output)
