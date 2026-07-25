@@ -7,6 +7,13 @@ _ABOVE = "above"
 _BELOW = "below"
 _NONE_VALUES = {"", "none", "null", "nothing"}
 
+# Subjects that name the robot rather than a block. Matched case-insensitively against the
+# left-hand side of a line, so that a robot line is recognized however many fields follow.
+_ROBOT_NAMES = {"robot", "robot_1", "robot_arm", "robot arm", "gripper", "arm", "hand"}
+# Every dataset declares exactly one ``robot - robot`` object, so the robot facts always use
+# this name regardless of what the input called it. ``ALIAS_MAP`` maps it to ``robot_1``.
+_ROBOT_OBJECT = "robot"
+
 
 def _split_line(line: str) -> tuple[str, str, str] | None:
     """Split ``<object>: <above>, <below>`` into ``(object, above, below)``.
@@ -28,6 +35,44 @@ def _split_line(line: str) -> tuple[str, str, str] | None:
     above, below = fields
     below = below.split()[0] if below else "none"  # ignore extra tokens
     return subject.strip(), above, below
+
+
+def _split_robot_line(line: str) -> str | None:
+    """Return the object held by the robot in ``<robot>: <object held, or 'none'>``.
+
+    Returns ``"none"`` when the robot holds nothing, and ``None`` when the line does not
+    describe the robot at all (including blank and malformed lines).
+
+    Only the first comma-separated field is read, so a line that mimics the two-field object
+    shape (``robot: red_1, none``) is still understood as the robot holding ``red_1``.
+    """
+    line = line.strip()
+    if ":" not in line:
+        return None
+
+    subject, _, rhs = line.partition(":")
+    if subject.strip().lower() not in _ROBOT_NAMES:
+        return None
+
+    held = rhs.split(",")[0].strip().rstrip(".")  # the format example ends in a period
+    return held.split()[0] if held else "none"  # ignore extra tokens
+
+
+def partition_robot_lines(lines: list[str]) -> tuple[list[str], list[str]]:
+    """Split raw statement lines into ``(object_lines, robot_lines)``.
+
+    Only the object lines describe spatial relations, so only they belong in
+    :func:`resolve_spatial_relations`; the robot lines go straight to
+    :func:`neighbors_to_pddl`. Keeping the robot out of the solver also stops it from being
+    placed in a stack, which would emit ill-typed ``on``/``ontable`` facts for it.
+    """
+    object_lines, robot_lines = [], []
+    for line in lines:
+        if _split_robot_line(line) is None:
+            object_lines.append(line)
+        else:
+            robot_lines.append(line)
+    return object_lines, robot_lines
 
 
 def _parse_lines(
@@ -212,29 +257,76 @@ def resolve_spatial_relations(lines: list[str]) -> list[str]:
     ]
 
 
-def neighbors_to_pddl(lines: list[str]) -> set[str]:
-    """Convert resolved neighbor lines into blocksworld ``on``/``clear``/``ontable`` facts.
+def _resolve_held(robot_lines: list[str]) -> str | None:
+    """Resolve possibly-conflicting robot statements into the single object being held.
 
-    Each line has the same ``<object>: <above>, <below>`` shape produced by
+    Each image contributes its own robot line, so the views can disagree. The most-observed
+    answer wins; a tie falls back to an empty hand, as does an empty input.
+
+    Returns:
+        The held object, or ``None`` if the robot holds nothing.
+    """
+    observations: Counter[str | None] = Counter()
+    for line in robot_lines:
+        held = _split_robot_line(line)
+        if held is None:
+            continue
+        observations[None if held.lower() in _NONE_VALUES else held] += 1
+
+    if not observations:
+        return None
+
+    (winner, votes), *rest = observations.most_common()
+    if rest and rest[0][1] == votes:
+        return None  # tied views; assume the hand is empty
+    return winner
+
+
+def neighbors_to_pddl(
+    lines: list[str], robot_lines: list[str] | None = None
+) -> set[str]:
+    """Convert resolved neighbor lines into Blocksworld facts.
+
+    Each line in ``lines`` has the same ``<object>: <above>, <below>`` shape produced by
     :func:`resolve_spatial_relations` (either field may be ``none``). The mapping is:
 
       - ``below`` is a real object  -> ``(on <object> <below>)``
       - ``below`` is ``none``       -> ``(ontable <object>)``
       - ``above`` is ``none``       -> ``(clear <object>)``
 
+    Each line in ``robot_lines`` has the ``<robot>: <object held, or 'none'>`` shape, as
+    separated out by :func:`partition_robot_lines`. An empty hand becomes
+    ``(handempty <robot>)``; a held object becomes ``(handfull <robot>)`` plus
+    ``(holding <object>)``. Omitting the robot lines entirely leaves the hand empty.
+
+    A held object cannot also be resting in a stack, so it is detached from the stack graph:
+    it gets no facts of its own, and any block the input placed directly on it is emitted as
+    ``ontable`` instead. Note that this matches the held object by exact name, so an input
+    that calls it ``red`` on the robot line but ``red_1`` on its own line is not detached.
+
     Malformed lines are skipped.
     """
+    held = _resolve_held(robot_lines or [])
+
     facts: set[str] = set()
     for line in lines:
         parsed = _split_line(line)
         if parsed is None:
             continue
         obj, above, below = parsed
+        if obj == held:
+            continue
 
-        if below.lower() in _NONE_VALUES:
+        if below.lower() in _NONE_VALUES or below == held:
             facts.add(f"(ontable {obj})")
         else:
             facts.add(f"(on {obj} {below})")
-        if above.lower() in _NONE_VALUES:
+        if above.lower() in _NONE_VALUES or above == held:
             facts.add(f"(clear {obj})")
+
+    if held is None:
+        facts.add(f"(handempty {_ROBOT_OBJECT})")
+    else:
+        facts.add(f"(handfull {_ROBOT_OBJECT})")
+        facts.add(f"(holding {held})")
     return facts

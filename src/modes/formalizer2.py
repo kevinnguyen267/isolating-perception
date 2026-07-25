@@ -25,7 +25,7 @@ def build_grounded_prompt(
         )
     hidden_object_hint_2 = ""
     if dataset == "blocksworld_hidden":
-        hidden_object_hint_2 = ", including the hidden object:"
+        hidden_object_hint_2 = ", including the hidden object"
         
     return [
         {
@@ -44,8 +44,10 @@ def build_grounded_prompt(
             "text": (
                 "First, list out the objects in each image.\n"
                 f"{hidden_object_hint_1}"
-                f"Next, create a mapping for each image in the following format for every object in that image{hidden_object_hint_2}\n"
-                "<object>: <object above, or 'none'>, <object below, or 'none'>."
+                f"Next, create a mapping for each image in the following format for every object in that image{hidden_object_hint_2}:\n"
+                "<object>: <object above, or 'none'>, <object below, or 'none'>\n"
+                "For each mapping, add a line for the robot in the following format:\n"
+                "<robot>: <object held, or 'none'> where 'none' indicates that the robot is not holding any object or the robot is not visible in the image."
             ),
         },
         {

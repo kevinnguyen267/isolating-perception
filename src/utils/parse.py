@@ -1,6 +1,10 @@
 import re
 
-from utils.spatial_solver import neighbors_to_pddl, resolve_spatial_relations
+from utils.spatial_solver import (
+    neighbors_to_pddl,
+    partition_robot_lines,
+    resolve_spatial_relations,
+)
 
 # Alias to canonical name mapping
 ALIAS_MAP = {
@@ -253,9 +257,8 @@ def normalize_plan(plan_text: str) -> str:
 
 
 def extract_output_from_response(response: str, mode: str) -> tuple[list[str], str]:
-    """Extract the lines within the last code block of the response.
-    Each line is formatted as '(<token0> <token1> <token2> ...)'.
-    For output_str, the lines are joined with newlines.
+    """For planner/formalizer modes, extract the last code block from the response and return a list of normalized lines and a single string.
+    For formalizer2 mode, extract the <image1> and <image2> blocks, resolve spatial relations, and return a list of normalized lines and a single string.
 
     Returns: (output_lst, output_str)"""
     if mode == "planner" or mode == "formalizer":
@@ -273,9 +276,13 @@ def extract_output_from_response(response: str, mode: str) -> tuple[list[str], s
         output_str = "\n".join(output)
         return output, output_str
 
-    matches = re.findall(r"<image[12]>(.*?)</image[12]>", response, re.DOTALL)
-    lines = [line for m in matches for line in m.strip().splitlines()]
-    output = neighbors_to_pddl(resolve_spatial_relations(lines))
-    output.add("(handempty robot_1)")
+    blocks: dict[str, str] = {}
+    for tag, body in re.findall(r"<(image[12])>(.*?)</image[12]>", response, re.DOTALL):
+        blocks[tag] = body
+    lines = [
+        line for tag in sorted(blocks) for line in blocks[tag].strip().splitlines()
+    ]
+    object_lines, robot_lines = partition_robot_lines(lines)
+    output = neighbors_to_pddl(resolve_spatial_relations(object_lines), robot_lines)
 
     return list(output), "\n".join(output)
