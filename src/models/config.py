@@ -3,9 +3,18 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
-VLLM_PORT = int(os.getenv("VLLM_PORT", "12300"))
-VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", f"http://localhost:{VLLM_PORT}/v1")
 
+# vLLM connection settings.
+# Experiments never start a server: point a run at one that scripts/serve_vllm.sh
+# already launched, with VLLM_PORT (or VLLM_BASE_URL for a server elsewhere).
+_VLLM_PORT_ENV = os.getenv("VLLM_PORT")
+VLLM_PORT = int(_VLLM_PORT_ENV) if _VLLM_PORT_ENV else None
+VLLM_BASE_URL = os.getenv("VLLM_BASE_URL") or (
+    f"http://localhost:{VLLM_PORT}/v1" if VLLM_PORT else None
+)
+
+# vllm_serve_args below are not used by the experiments; scripts/serve_vllm.sh
+# reads them so that the launch flags for a model live in one place.
 MODEL_CONFIG = {
     "GPT-5.5": {
         "model_id": "gpt-5.5-2026-04-23",
@@ -17,7 +26,7 @@ MODEL_CONFIG = {
     "Qwen3.6-Plus": {
         "openrouter_model_id": "qwen/qwen3.6-plus",
     },
-    "Qwen3.5-122B-A10B": { 
+    "Qwen3.5-122B-A10B": {
         "model_id": "Qwen/Qwen3.5-122B-A10B",
         "openrouter_model_id": "qwen/qwen3.5-122b-a10b",
         "vllm_serve_args": [
@@ -30,12 +39,12 @@ MODEL_CONFIG = {
             "--reasoning-parser", "qwen3",
         ],
     },
-    "Gemma-4-31B": { 
+    "Gemma-4-31B": {
         "model_id": "google/gemma-4-31B-it",
         "openrouter_model_id": "google/gemma-4-31b-it",
         "vllm_serve_args": [
             "-tp", "2",
-            "-dp", "2",
+            # "-dp", "2",
             "--max-model-len", "40960",
             "--reasoning-parser", "gemma4",
         ],

@@ -25,6 +25,7 @@ from utils.statistics import (
     get_eval_report_formalizer,
     get_eval_report_planner,
 )
+from utils.usage import get_completion_tokens
 from utils.vlm import generate_response
 
 
@@ -228,10 +229,11 @@ def _run_planner(args, mode_module, model_id, output_dir, dataset_dir, use_batch
         stats["plan_success"] = plan_success
         return stats
 
+    completion_tokens = get_completion_tokens()
     _process_in_parallel(
         list(problem_meta.items()),
         _process_one,
-        get_eval_report_planner,
+        lambda summary: get_eval_report_planner(summary, completion_tokens),
         output_dir,
         max_workers=getattr(args, "processing_workers", None),
     )
@@ -365,10 +367,11 @@ def _run_formalizer(
         stats.update(compute_precision_recall_f1(gt_problem, problem))
         return stats
 
+    completion_tokens = get_completion_tokens()
     _process_in_parallel(
         list(problem_meta.items()),
         _process_one,
-        get_eval_report_formalizer,
+        lambda summary: get_eval_report_formalizer(summary, completion_tokens),
         output_dir,
         max_workers=getattr(args, "processing_workers", None),
     )

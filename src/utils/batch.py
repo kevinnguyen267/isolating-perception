@@ -6,6 +6,7 @@ from typing import Callable, List
 from google.genai import types
 from google.genai.types import JOB_STATES_ENDED, JOB_STATES_SUCCEEDED
 from openai import OpenAI
+from utils.usage import record_completion_tokens
 from utils.vlm import (
     _generate_response_gemini,
     content_to_gemini_parts_dict,
@@ -183,6 +184,10 @@ def _download_and_parse_gemini_results(
             continue
 
         response = entry.get("response", entry)
+        usage = response.get("usageMetadata") or {}
+        record_completion_tokens(
+            usage.get("candidatesTokenCount"), usage.get("thoughtsTokenCount")
+        )
         results[cid] = parse_gemini_response_dict(response)
 
     print(f"  Parsed {len(results)} results.")
@@ -212,6 +217,7 @@ def _download_and_parse_results(
             continue
 
         body = entry["response"]["body"]
+        record_completion_tokens((body.get("usage") or {}).get("completion_tokens"))
         text = body["choices"][0]["message"]["content"] or ""
         results[cid] = text
 
@@ -356,6 +362,8 @@ def run_batch(
             messages=body["messages"],
             max_completion_tokens=body.get("max_completion_tokens"),
         )
+        if response.usage:
+            record_completion_tokens(response.usage.completion_tokens)
         return response.choices[0].message.content
 
     _retry_failed_requests(requests, results, _execute, max_retries)

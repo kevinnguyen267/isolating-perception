@@ -5,10 +5,10 @@ from pathlib import Path
 from time import time
 
 from models.config import MODEL_CONFIG
-from models.vllm_server import ensure_vllm_server, kill_vllm_server
 from modes import ALL_MODES, get_mode
 from pipeline import run_pipeline
 from utils.helpers import seed_everything, verify_plans
+from utils.vlm import verify_vllm_server
 
 
 def parse_args():
@@ -76,11 +76,6 @@ def parse_args():
         help="Enable (--batch) or disable (--no-batch) batch processing for GPT (OpenAI Batch API) or Gemini (Gen AI batch) models (not applicable to OpenRouter)",
     )
     parser.add_argument(
-        "--terminate_server",
-        action="store_true",
-        help="Terminate the vLLM server (do not run any experiments)",
-    )
-    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -89,8 +84,8 @@ def parse_args():
     parser.add_argument(
         "--num_samples",
         type=int,
-        default=None,
-        help="Only use the first num_samples in the dataset (default: all)",
+        default=110,
+        help="Only use the first num_samples in the dataset (default: 110)",
     )
     parser.add_argument(
         "--concurrency",
@@ -111,11 +106,8 @@ def parse_args():
 def main():
     timer_start = time()
     args = parse_args()
-    seed_everything(args.seed)
 
-    if args.terminate_server:
-        kill_vllm_server()
-        return
+    seed_everything(args.seed)
 
     # Resolve mode
     mode_config = get_mode(args.mode)
@@ -152,7 +144,8 @@ def main():
         use_batch = args.batch
     else:
         if "vllm_serve_args" in MODEL_CONFIG[args.model_name]:
-            ensure_vllm_server(args.model_name)
+            model_id = MODEL_CONFIG[args.model_name]["model_id"]
+            print(f"Using vLLM server at {verify_vllm_server(model_id)}")
         elif args.model_name.lower().startswith("gpt"):
             if "OPENAI_API_KEY" not in os.environ:
                 raise EnvironmentError("OPENAI_API_KEY environment variable not set.")
@@ -170,14 +163,23 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.use_gemini or args.model_name.lower().startswith("gpt"):
         thinking_label = ""
-    output_dir = (
+    run_dir = (
         Path("results")
         / args.dataset
         / mode_str
         / f"{args.model_name}{thinking_label}"
         / timestamp
     )
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Two runs can start the same experiment within the same second, so never
+    # let them write into a shared directory.
+    output_dir, attempt = run_dir, 1
+    while True:
+        try:
+            output_dir.mkdir(parents=True, exist_ok=False)
+            break
+        except FileExistsError:
+            output_dir = run_dir.with_name(f"{timestamp}_{attempt}")
+            attempt += 1
 
     # Verify dataset dir and create plans if they don't exist
     dataset_dir = Path("data") / args.dataset

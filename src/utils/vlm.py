@@ -1,6 +1,8 @@
 import base64
+import json
 import os
 import time
+import urllib.request
 from pathlib import Path
 from typing import List
 
@@ -9,7 +11,8 @@ from google.genai import types
 from openai import OpenAI
 from openai.types.chat import ChatCompletion
 
-from models.config import VLLM_BASE_URL
+from models import config
+from utils.usage import record_completion_tokens
 
 
 def _guess_mime_type(image_path: Path) -> str:
@@ -46,11 +49,42 @@ def get_client(model_id: str, use_openrouter: bool = False):
             api_key=os.environ["OPENROUTER_API_KEY"],
             base_url="https://openrouter.ai/api/v1",
         )
-    return (
-        OpenAI()
-        if model_id.startswith("gpt")
-        else OpenAI(api_key="EMPTY", base_url=VLLM_BASE_URL, timeout=1800)
-    )
+    if model_id.startswith("gpt"):
+        return OpenAI()
+    if config.VLLM_BASE_URL is None:
+        raise RuntimeError(_NO_SERVER_MSG)
+    return OpenAI(api_key="EMPTY", base_url=config.VLLM_BASE_URL, timeout=1800)
+
+
+_NO_SERVER_MSG = (
+    "No vLLM server configured for this run. Start one with\n"
+    "    scripts/serve_vllm.sh --model <model_name> --gpus <csv>\n"
+    "and point the run at it with VLLM_PORT (or VLLM_BASE_URL)."
+)
+
+
+def verify_vllm_server(model_id: str) -> str:
+    """Check that a vLLM server is up and serving *model_id*; return its base URL.
+
+    Called once at startup so a missing or mismatched server fails immediately
+    instead of after the dataset and prompts have been built.
+    """
+    if config.VLLM_BASE_URL is None:
+        raise RuntimeError(_NO_SERVER_MSG)
+    try:
+        with urllib.request.urlopen(f"{config.VLLM_BASE_URL}/models", timeout=10) as resp:
+            served = [m["id"] for m in json.loads(resp.read().decode()).get("data", [])]
+    except Exception as e:
+        raise RuntimeError(
+            f"No vLLM server reachable at {config.VLLM_BASE_URL} ({e}). "
+            "Start one with scripts/serve_vllm.sh, or check VLLM_PORT."
+        ) from e
+    if model_id not in served:
+        raise RuntimeError(
+            f"The vLLM server at {config.VLLM_BASE_URL} serves {served}, not "
+            f"{model_id}. Point VLLM_PORT at the right server."
+        )
+    return config.VLLM_BASE_URL
 
 
 def _create_completion(
@@ -262,6 +296,7 @@ def _generate_response_gemini(
     usage = response.usage_metadata  # type: ignore
     if usage:
         thoughts = getattr(usage, "thoughts_token_count", None)
+        record_completion_tokens(usage.candidates_token_count, thoughts)
         thoughts_str = f"Thinking: {thoughts}, " if thoughts else ""
         print(
             "    Usage - "
@@ -321,6 +356,7 @@ def generate_response(
     content = message.content or ""
 
     if response.usage:
+        record_completion_tokens(response.usage.completion_tokens)
         print(
             "    Usage - "
             f"Prompt: {response.usage.prompt_tokens}, "

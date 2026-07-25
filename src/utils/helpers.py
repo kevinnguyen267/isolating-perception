@@ -94,6 +94,9 @@ def verify_plans(dataset_dir: Path, downward_dir: Path):
                 f"New dataset problem found. Generating ground truth plan for {prob_dir.name}..."
             )
             with tempfile.TemporaryDirectory() as tmpdir:
+                # Plan into the temp dir and move it into place, so a concurrent
+                # run never sees a half-written plan.txt in the shared dataset.
+                tmp_plan_path = Path(tmpdir) / "plan.txt"
                 result = subprocess.run(
                     [
                         "python3",
@@ -107,13 +110,15 @@ def verify_plans(dataset_dir: Path, downward_dir: Path):
                         "--sas-file",
                         f"{tmpdir}/output.sas",
                         "--plan-file",
-                        str(plan_path),
+                        str(tmp_plan_path),
                         str(domain_path),
                         str(problem_path),
                     ],
                     capture_output=True,
                     text=True,
                 )
+                if tmp_plan_path.exists():
+                    os.replace(tmp_plan_path, plan_path)
                 if not plan_path.exists():
                     print(
                         f"ERROR: No plan generated for {prob_dir.name} "

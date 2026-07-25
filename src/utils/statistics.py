@@ -94,8 +94,25 @@ def compute_plan_success_with_ground_truth(
     return result
 
 
+def compute_completion_token_stats(completion_tokens: list[int] | None) -> dict:
+    """Mean and median completion tokens over all generation calls in the run."""
+    values = sorted(completion_tokens or [])
+    if not values:
+        return {"mean_completion_tokens": 0.0, "median_completion_tokens": 0.0}
+
+    n = len(values)
+    mid = n // 2
+    return {
+        "mean_completion_tokens": sum(values) / n,
+        "median_completion_tokens": (
+            values[mid] if n % 2 else (values[mid - 1] + values[mid]) / 2
+        ),
+    }
+
+
 def get_eval_report_planner(
     statistics_summary: dict,
+    completion_tokens: list[int] | None = None,
 ) -> dict:
     """Generate an evaluation report summarizing the statistics for all problems."""
     if not statistics_summary:
@@ -114,6 +131,7 @@ def get_eval_report_planner(
 
     statistics_summary_avg = {
         "plan_success_rate": num_passed / num_problems if num_problems > 0 else 0.0,
+        **compute_completion_token_stats(completion_tokens),
         "num_problems": num_problems,
         "num_plans_passed": num_passed,
         "num_plans_failed": num_failed,
@@ -136,6 +154,7 @@ def get_eval_report_planner(
 
 def get_eval_report_formalizer(
     statistics_summary: dict,
+    completion_tokens: list[int] | None = None,
 ) -> dict:
     """Generate an evaluation report summarizing the statistics for all problems."""
     if not statistics_summary:
@@ -168,6 +187,7 @@ def get_eval_report_formalizer(
 
     statistics_summary_avg = {
         "plan_success_rate": num_passed / num_problems if num_problems > 0 else 0.0,
+        **compute_completion_token_stats(completion_tokens),
         "num_problems": num_problems,
         "num_plans_reprompted": sum(
             p.get("num_reprompts", 0) > 0 for p in statistics_summary.values()
