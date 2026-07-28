@@ -1,11 +1,15 @@
+import os
 from collections import Counter
 from itertools import combinations
 
-from z3 import And, Context, Int, Optimize, Or, sat
+from z3 import And, Context, Int, Optimize, Or, Z3Exception, unknown, unsat
 
 _ABOVE = "above"
 _BELOW = "below"
 _NONE_VALUES = {"", "none", "null", "nothing"}
+
+# Override with SPATIAL_SOLVER_TIMEOUT_MS (0 disables the cap).
+_SOLVER_TIMEOUT_MS = 5 * 60 * 1000
 
 # Subjects that name the robot rather than a block. Matched case-insensitively against the
 # left-hand side of a line, so that a robot line is recognized however many fields follow.
@@ -184,6 +188,8 @@ def _best_supported_model(
     Returns the solved model, or ``None`` if the solver fails.
     """
     opt = Optimize(ctx=placement.ctx)
+    if _SOLVER_TIMEOUT_MS > 0:
+        opt.set("timeout", _SOLVER_TIMEOUT_MS)
     for constraint in placement.distinct_cells():
         opt.add(constraint)
 
@@ -208,7 +214,20 @@ def _best_supported_model(
         if slot is not None:
             opt.add_soft(slot, count)
 
-    return opt.model() if opt.check() == sat else None
+    result = opt.check()
+    if result == unsat:
+        return None
+    if result == unknown:
+        print(
+            f"  [spatial_solver] solve timed out after {_SOLVER_TIMEOUT_MS}ms "
+            f"({len(placement.objects)} objects, {len(weights)} relations); "
+            "using best placement found"
+        )
+
+    try:
+        return opt.model()
+    except Z3Exception:
+        return None
 
 
 def resolve_spatial_relations(lines: list[str]) -> list[str]:
@@ -239,9 +258,12 @@ def resolve_spatial_relations(lines: list[str]) -> list[str]:
     placement = _Placement(objects)
     model = _best_supported_model(placement, weights, none_obs)
     if model is None:
-        # Distinct-cell constraints are always satisfiable (spread objects out), so this
-        # should not happen; guard defensively.
-        print("  [spatial_solver] solver returned unsat; no relations resolved")
+        # Distinct-cell constraints are always satisfiable (spread objects out), so the only
+        # realistic cause is a timeout that expired before the first model.
+        print(
+            f"  [spatial_solver] no model for {len(objects)} objects "
+            f"(timeout={_SOLVER_TIMEOUT_MS}ms); no relations resolved"
+        )
         return []
 
     # Reconstruct per-object neighbors from the relations the placement satisfies.

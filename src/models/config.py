@@ -30,7 +30,6 @@ MODEL_CONFIG = {
         "model_id": "Qwen/Qwen3.5-122B-A10B",
         "openrouter_model_id": "qwen/qwen3.5-122b-a10b",
         "vllm_serve_args": [
-            "-tp", "4",
             "--max-model-len", "40960",
             "--enable-expert-parallel",
             "--mm-encoder-tp-mode", "data",
@@ -43,8 +42,6 @@ MODEL_CONFIG = {
         "model_id": "google/gemma-4-31B-it",
         "openrouter_model_id": "google/gemma-4-31b-it",
         "vllm_serve_args": [
-            "-tp", "2",
-            # "-dp", "2",
             "--max-model-len", "40960",
             "--reasoning-parser", "gemma4",
         ],

@@ -5,23 +5,25 @@
 # of requests.
 #
 # Usage:
-#   scripts/serve_vllm.sh --model <name-or-hf-id> --gpus <csv> [--port N] [--max-model-len N]
-#                         [--gpu-memory-utilization F] [-- <extra vllm args>]
+#   scripts/serve_vllm.sh --model <name-or-hf-id> --gpus <csv> [--port N] [--dp N]
+#                         [--max-model-len N] [--gpu-memory-utilization F] [-- <extra vllm args>]
 #
 # Examples of running in background and logging output (ensure logs/ directory exists first):
 #   nohup bash scripts/serve_vllm.sh --model Gemma-4-31B --gpus 4,5 >> logs/serve_vllm_gemma.log 2>&1 &
+#   nohup bash scripts/serve_vllm.sh --model Gemma-4-31B --gpus 4,5,6,7 --dp 2 >> logs/serve_vllm_gemma.log 2>&1 &
 #   nohup bash scripts/serve_vllm.sh --model Qwen3.5-122B-A10B --gpus 0,1,2,3 >> logs/serve_vllm_qwen.log 2>&1 &
 
 set -euo pipefail
 
 DEFAULT_GPUMEM=0.95
 
-MODEL="" ; GPUS="" ; PORT="" ; MAXLEN="" ; GPUMEM="" ; WAIT=1 ; EXTRA=()
+MODEL="" ; GPUS="" ; PORT="" ; MAXLEN="" ; GPUMEM="" ; DP=1 ; WAIT=1 ; EXTRA=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model)                    MODEL="$2"; shift 2;;
     --gpus)                     GPUS="$2";  shift 2;;
     --port)                     PORT="$2";  shift 2;;
+    --dp|--data-parallel-size)  DP="$2";    shift 2;;
     --max-model-len)            MAXLEN="$2"; shift 2;;
     --gpu-memory-utilization)   GPUMEM="$2"; shift 2;;
     --no-wait)                  WAIT=0; shift;;
@@ -30,10 +32,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -z "$MODEL" || -z "$GPUS" ]] && {
-  echo "usage: $0 --model <name-or-hf-id> --gpus <csv> [--port N] [--max-model-len N]" \
+  echo "usage: $0 --model <name-or-hf-id> --gpus <csv> [--port N] [--dp N] [--max-model-len N]" \
        "[--gpu-memory-utilization F] [--no-wait] [-- extra]" >&2
   exit 1
 }
+[[ "$DP" =~ ^[1-9][0-9]*$ ]] || { echo "--dp must be a positive integer, got '$DP'" >&2; exit 1; }
 
 ROOT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." &> /dev/null && pwd )"
 cd "$ROOT_DIR"
@@ -47,8 +50,7 @@ export TMPDIR="${TMPDIR:-/local-ssd/ktn48/tmp}"
 
 # Resolve the HF id and the model's serve flags from MODEL_CONFIG, so this script and the
 # experiments agree on both. An unknown --model is passed through as a raw HF id.
-mapfile -t CFG < <(python - "$MODEL" "${MAXLEN:+--max-model-len}" \
-                            "${GPUMEM:+--gpu-memory-utilization}" <<'PY'
+mapfile -t CFG < <(python - "$MODEL" <<'PY'
 import sys
 
 sys.path.insert(0, "src")
@@ -57,27 +59,22 @@ from models.config import MODEL_CONFIG
 name = sys.argv[1]
 cfg = MODEL_CONFIG.get(name, {})
 print(cfg.get("model_id", name))
-
-# Drop config flags that this invocation supplies itself: tensor parallelism
-# comes from --gpus, and --max-model-len / --gpu-memory-utilization from the
-# flags of the same name (only when those flags were actually passed).
-overridden = {"-tp", "--tensor-parallel-size", *filter(None, sys.argv[2:])}
-skip = False
 for arg in cfg.get("vllm_serve_args", []):
-    if skip:
-        skip = False
-    elif arg in overridden:
-        skip = True
-    else:
-        print(arg)
+    print(arg)
 PY
 )
 HF_ID="${CFG[0]}"
 MODEL_ARGS=("${CFG[@]:1}")
 
 IFS=',' read -ra GPU_ARR <<< "$GPUS"
-TP="${#GPU_ARR[@]}"
+NGPU="${#GPU_ARR[@]}"
 FIRST_GPU="${GPU_ARR[0]}"
+
+(( NGPU % DP == 0 )) || {
+  echo "--dp $DP does not divide the $NGPU gpu(s) in --gpus $GPUS" >&2
+  exit 1
+}
+TP=$(( NGPU / DP ))
 
 # Shared server: the default port may be taken by another user. Bump to the next free one
 # (checking the OS listen table), but never second-guess an explicitly pinned --port.
@@ -98,7 +95,9 @@ export CUDA_VISIBLE_DEVICES="$GPUS"
 SAFE="$(echo "$MODEL" | tr '/' '_')"
 LOG_DIR="${VLLM_LOG_DIR:-$ROOT_DIR/logs}"
 mkdir -p "$LOG_DIR"
-TAG="vllm_${SAFE}_gpu${GPUS//,/_}_port${PORT}"
+DP_TAG=""
+[[ "$DP" -gt 1 ]] && DP_TAG="_dp${DP}"
+TAG="vllm_${SAFE}_gpu${GPUS//,/_}${DP_TAG}_port${PORT}"
 LOG="$LOG_DIR/$TAG.log"
 PIDFILE="$LOG_DIR/$TAG.pid"
 
@@ -107,17 +106,18 @@ PIDFILE="$LOG_DIR/$TAG.pid"
 NAMES=( "$HF_ID" )
 [[ "$MODEL" != "$HF_ID" ]] && NAMES+=( "$MODEL" )
 CMD=( vllm serve "$HF_ID"
-      --tensor-parallel-size "$TP"
       --host 127.0.0.1 --port "$PORT"
       --served-model-name "${NAMES[@]}"
-      --gpu-memory-utilization "$DEFAULT_GPUMEM"
       --trust-remote-code )
 [[ ${#MODEL_ARGS[@]} -gt 0 ]] && CMD+=( "${MODEL_ARGS[@]}" )
+
+CMD+=( --tensor-parallel-size "$TP" )
+[[ "$DP" -gt 1 ]] && CMD+=( --data-parallel-size "$DP" )
+CMD+=( --gpu-memory-utilization "${GPUMEM:-$DEFAULT_GPUMEM}" )
 [[ -n "$MAXLEN" ]] && CMD+=( --max-model-len "$MAXLEN" )
-[[ -n "$GPUMEM" ]] && CMD+=( --gpu-memory-utilization "$GPUMEM" )
 [[ ${#EXTRA[@]} -gt 0 ]] && CMD+=( "${EXTRA[@]}" )
 
-echo "Serving $HF_ID  gpus=$GPUS  tp=$TP  port=$PORT  gpu-mem-util=${GPUMEM:-$DEFAULT_GPUMEM}"
+echo "Serving $HF_ID  gpus=$GPUS  tp=$TP  dp=$DP  port=$PORT  gpu-mem-util=${GPUMEM:-$DEFAULT_GPUMEM}"
 echo "log:  $LOG"
 
 # Detach fully so the server outlives this shell (new session, ignore SIGHUP, no stdin).

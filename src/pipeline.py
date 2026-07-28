@@ -312,6 +312,9 @@ def _run_formalizer(
         gt_problem_path = meta["gt_problem_path"]
         output_problem_dir = meta["output_problem_dir"]
 
+        (output_problem_dir / "init_response.txt").write_text(init_response)
+        (output_problem_dir / "goal_response.txt").write_text(goal_response)
+
         # Assemble PDDL problem
         (
             problem,
@@ -328,9 +331,6 @@ def _run_formalizer(
         problem = normalize_problem(problem)
         (output_problem_dir / "problem.pddl").write_text(problem)
 
-        # Save VLM responses
-        (output_problem_dir / "init_response.txt").write_text(init_response)
-        (output_problem_dir / "goal_response.txt").write_text(goal_response)
         (output_problem_dir / "init_response_extracted.txt").write_text(
             init_response_extracted
         )
