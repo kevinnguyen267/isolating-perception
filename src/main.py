@@ -4,11 +4,13 @@ from datetime import datetime
 from pathlib import Path
 from time import time
 
+from models import config
 from models.config import MODEL_CONFIG
 from modes import ALL_MODES, get_mode
 from pipeline import run_pipeline
+from utils.batch import NO_VERTEX_BATCH_MSG
 from utils.helpers import seed_everything, verify_plans
-from utils.vlm import verify_vllm_server
+from utils.vlm import NO_VERTEX_CREDENTIALS_MSG, verify_vllm_server
 
 
 def parse_args():
@@ -136,12 +138,18 @@ def main():
                 f"Model {args.model_name} has no 'gemini_model_id' configured "
                 "for the Gemini Enterprise Agent Platform."
             )
-        if not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
-            raise EnvironmentError(
-                "GEMINI_API_KEY (or GOOGLE_API_KEY) environment variable not set."
-            )
+        if not (
+            config.GOOGLE_CLOUD_PROJECT
+            or os.getenv("GEMINI_API_KEY")
+            or os.getenv("GOOGLE_API_KEY")
+        ):
+            raise EnvironmentError(NO_VERTEX_CREDENTIALS_MSG)
         model_id = MODEL_CONFIG[args.model_name]["gemini_model_id"]
         use_batch = args.batch
+        if use_batch and not (
+            config.GOOGLE_CLOUD_PROJECT and config.VERTEX_BATCH_BUCKET
+        ):
+            raise EnvironmentError(NO_VERTEX_BATCH_MSG)
     else:
         if "vllm_serve_args" in MODEL_CONFIG[args.model_name]:
             model_id = MODEL_CONFIG[args.model_name]["model_id"]
@@ -159,7 +167,9 @@ def main():
     # Output directory
     mode_label = f"{'batch_' if use_batch else 'seq_'}{mode_str}"
     thinking_label = "_thinking" if args.thinking else "_no_thinking"
-    print(f"Running {args.dataset} using {args.model_name}{thinking_label} ({mode_label})...")
+    print(
+        f"Running {args.dataset} using {args.model_name}{thinking_label} ({mode_label})..."
+    )
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.use_gemini or args.model_name.lower().startswith("gpt"):
         thinking_label = ""

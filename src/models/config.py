@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# vLLM connection settings.
+# vLLM connection settings
 # Experiments never start a server: point a run at one that scripts/serve_vllm.sh
 # already launched, with VLLM_PORT (or VLLM_BASE_URL for a server elsewhere).
 _VLLM_PORT_ENV = os.getenv("VLLM_PORT")
@@ -12,6 +12,11 @@ VLLM_PORT = int(_VLLM_PORT_ENV) if _VLLM_PORT_ENV else None
 VLLM_BASE_URL = os.getenv("VLLM_BASE_URL") or (
     f"http://localhost:{VLLM_PORT}/v1" if VLLM_PORT else None
 )
+
+# Vertex AI settings
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
+GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "global")
+VERTEX_BATCH_BUCKET = os.getenv("VERTEX_BATCH_BUCKET")  # gs://<bucket>[/<prefix>]
 
 # vllm_serve_args below are not used by the experiments; scripts/serve_vllm.sh
 # reads them so that the launch flags for a model live in one place.

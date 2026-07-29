@@ -1,10 +1,13 @@
+import hashlib
 import json
 import time
 from pathlib import Path
 from typing import Callable, List
 
+from google.cloud import storage
 from google.genai import types
 from google.genai.types import JOB_STATES_ENDED, JOB_STATES_SUCCEEDED
+from models import config
 from openai import OpenAI
 from utils.usage import record_completion_tokens
 from utils.vlm import (
@@ -91,9 +94,9 @@ def _poll_gemini_batch(
     max_delay: float = 300.0,
     backoff_factor: float = 1.5,
 ) -> str:
-    """Poll until the Gemini batch job reaches a terminal state.
+    """Poll until the Vertex batch job reaches a terminal state.
 
-    Returns the output file resource name on success, raises otherwise.
+    Returns the GCS URI the results were written to on success, raises otherwise.
     """
     delay = initial_delay
     while True:
@@ -104,10 +107,10 @@ def _poll_gemini_batch(
         if state in JOB_STATES_ENDED:
             if state in JOB_STATES_SUCCEEDED:
                 dest = job.dest
-                if dest and dest.file_name:
-                    return dest.file_name
+                if dest and dest.gcs_uri:
+                    return dest.gcs_uri
                 raise RuntimeError(
-                    f"Batch {job_name} succeeded but produced no output file."
+                    f"Batch {job_name} succeeded but produced no output location."
                 )
             raise RuntimeError(
                 f"Batch {job_name} ended with state '{state}': {job.error}"
@@ -158,32 +161,113 @@ def _poll_batch(
         delay = min(delay * backoff_factor, max_delay)
 
 
-def _download_and_parse_gemini_results(
-    client,
-    output_file_name: str,
+NO_VERTEX_BATCH_MSG = (
+    "Vertex AI batch prediction needs a GCP project and a GCS bucket to stage\n"
+    "batch input and output:\n"
+    "    GOOGLE_CLOUD_PROJECT=<project-id>\n"
+    "    VERTEX_BATCH_BUCKET=gs://<bucket>[/<prefix>]\n"
+    "    GOOGLE_CLOUD_LOCATION=<region>   (optional, defaults to 'global')\n"
+    "plus application default credentials (gcloud auth application-default login).\n"
+    "An express-mode API key cannot submit batch jobs; drop --batch to generate\n"
+    "the responses synchronously instead."
+)
+
+
+def _split_gcs_uri(uri: str) -> tuple[str, str]:
+    """Split "gs://bucket/some/prefix" into ("bucket", "some/prefix")."""
+    bucket, _, blob = uri.removeprefix("gs://").strip("/").partition("/")
+    return bucket, blob
+
+
+def _gcs_bucket(bucket_name: str):
+    return storage.Client(project=config.GOOGLE_CLOUD_PROJECT).bucket(bucket_name)
+
+
+def _upload_batch_input(batch_file_path: Path) -> tuple[str, str]:
+    """Copy the batch input file into the staging bucket.
+
+    Vertex only reads batch input from GCS, so the local .jsonl is mirrored under
+    VERTEX_BATCH_BUCKET at the same path as the run directory it belongs to.
+    Returns the (input, output) GCS URIs.
+    """
+    base = config.VERTEX_BATCH_BUCKET.rstrip("/")  # type: ignore[union-attr]
+    run_path = batch_file_path.parent.as_posix().strip("/")
+    input_uri = f"{base}/{run_path}/{batch_file_path.name}"
+    output_uri = f"{base}/{run_path}/batch_output/"
+
+    bucket_name, blob_name = _split_gcs_uri(input_uri)
+    _gcs_bucket(bucket_name).blob(blob_name).upload_from_filename(
+        str(batch_file_path), content_type="application/jsonl"
+    )
+    print(f"  Batch input uploaded to {input_uri}")
+    return input_uri, output_uri
+
+
+def _download_vertex_results(output_uri: str) -> List[str]:
+    """Return the lines of every .jsonl Vertex wrote under *output_uri*."""
+    bucket_name, prefix = _split_gcs_uri(output_uri)
+    blobs = [
+        blob
+        for blob in _gcs_bucket(bucket_name).list_blobs(prefix=prefix)
+        if blob.name.endswith(".jsonl")
+    ]
+    if not blobs:
+        raise RuntimeError(f"Batch produced no .jsonl output under {output_uri}.")
+
+    lines: List[str] = []
+    for blob in blobs:
+        print(f"  Downloading results from gs://{bucket_name}/{blob.name}...")
+        lines.extend(blob.download_as_text().strip().splitlines())
+    return lines
+
+
+def _request_fingerprint(request: dict) -> str:
+    """Hash the prompt content of a batch request.
+
+    Vertex rows carry no user-supplied id (unlike the Gemini Developer API's
+    "key"), so responses are matched back to their custom_id through the request
+    that every output row echoes.
+    """
+    parts: List[str] = []
+    for content in request.get("contents") or []:
+        for part in content.get("parts") or []:
+            if part.get("text") is not None:
+                parts.append("text:" + part["text"])
+            else:
+                inline = part.get("inlineData") or part.get("inline_data") or {}
+                parts.append("image:" + str(inline.get("data", "")))
+    return hashlib.sha256("\x00".join(parts).encode()).hexdigest()
+
+
+def _parse_vertex_results(
+    lines: List[str],
     custom_ids: List[str],
+    fingerprints: List[str],
 ) -> dict[str, str]:
-    """Download the Gemini batch output file and parse it into {custom_id: text}."""
-    print(f"  Downloading results from file {output_file_name}...")
-    raw = client.files.download(file=output_file_name)
-    text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+    """Parse Vertex batch output rows into {custom_id: text}."""
+    pending: dict[str, List[str]] = {}
+    for fingerprint, cid in zip(fingerprints, custom_ids):
+        pending.setdefault(fingerprint, []).append(cid)
 
     results: dict[str, str] = {}
-    for idx, line in enumerate(text.strip().splitlines()):
+    for idx, line in enumerate(lines):
         if not line:
             continue
         entry = json.loads(line)
 
-        cid = entry.get("key")
-        if cid is None:
+        matches = pending.get(_request_fingerprint(entry.get("request") or {}))
+        if matches:
+            cid = matches.pop(0)
+        else:
             cid = custom_ids[idx] if idx < len(custom_ids) else f"_unknown_{idx}"
+            print(f"  WARNING: output row {idx} matched no request, assuming '{cid}'.")
 
-        if entry.get("error"):
-            print(f"  WARNING: request '{cid}' failed: {entry['error']}")
+        if entry.get("status"):
+            print(f"  WARNING: request '{cid}' failed: {entry['status']}")
             results[cid] = ""
             continue
 
-        response = entry.get("response", entry)
+        response = entry.get("response") or {}
         usage = response.get("usageMetadata") or {}
         record_completion_tokens(
             usage.get("candidatesTokenCount"), usage.get("thoughtsTokenCount")
@@ -260,9 +344,12 @@ def _retry_failed_requests(
 
 
 def _build_gemini_batch_line(req: dict) -> dict:
-    """Convert an internal Gemini request dict into a batch-input JSONL line."""
+    """Convert an internal Gemini request dict into a batch-input JSONL line.
+
+    Vertex accepts nothing but the request itself on a line, so the custom_id is
+    not carried through; see _request_fingerprint for how results are matched.
+    """
     return {
-        "key": req["custom_id"],
         "request": {
             "contents": [
                 {
@@ -284,38 +371,37 @@ def run_gemini_batch(
     description: str = "",
     max_retries: int = 3,
 ) -> dict[str, str]:
-    """Write the .jsonl, upload it, submit the Gemini batch, poll, and return results.
+    """Stage the .jsonl in GCS, submit the Vertex batch, poll, and return results.
 
     Failed or empty requests are retried synchronously. Returns {custom_id: text}.
     """
+    if not (config.GOOGLE_CLOUD_PROJECT and config.VERTEX_BATCH_BUCKET):
+        raise RuntimeError(NO_VERTEX_BATCH_MSG)
+
     client = get_gemini_client()
 
-    _write_batch_file(
-        [_build_gemini_batch_line(req) for req in requests], batch_file_path
-    )
+    lines = [_build_gemini_batch_line(req) for req in requests]
+    _write_batch_file(lines, batch_file_path)
+    input_uri, output_uri = _upload_batch_input(batch_file_path)
 
-    uploaded = client.files.upload(
-        file=str(batch_file_path),
-        config=types.UploadFileConfig(
-            display_name=description or batch_file_path.stem, mime_type="jsonl"
-        ),
-    )
     job = client.batches.create(
         model=model_id,
-        src=uploaded.name,  # type: ignore
-        config=(
-            types.CreateBatchJobConfig(display_name=description)
-            if description
-            else None
+        src=input_uri,
+        config=types.CreateBatchJobConfig(
+            dest=output_uri,
+            display_name=description or batch_file_path.stem,
         ),
     )
     print(
         f"  Batch created: {job.name} (state: {getattr(job.state, 'value', job.state)})"
     )
 
-    output_file_name = _poll_gemini_batch(client, job.name)  # type: ignore
-    custom_ids = [req["custom_id"] for req in requests]
-    results = _download_and_parse_gemini_results(client, output_file_name, custom_ids)
+    dest_uri = _poll_gemini_batch(client, job.name)  # type: ignore
+    results = _parse_vertex_results(
+        _download_vertex_results(dest_uri),
+        [req["custom_id"] for req in requests],
+        [_request_fingerprint(line["request"]) for line in lines],
+    )
 
     def _execute(req: dict) -> str | None:
         return _generate_response_gemini(

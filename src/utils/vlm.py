@@ -62,6 +62,13 @@ _NO_SERVER_MSG = (
     "and point the run at it with VLLM_PORT (or VLLM_BASE_URL)."
 )
 
+NO_VERTEX_CREDENTIALS_MSG = (
+    "No Vertex AI credentials. Set GOOGLE_CLOUD_PROJECT (and run\n"
+    "    gcloud auth application-default login\n"
+    "once) to use a real project, or GEMINI_API_KEY / GOOGLE_API_KEY to use\n"
+    "express mode, which cannot run batch jobs."
+)
+
 
 def verify_vllm_server(model_id: str) -> str:
     """Check that a vLLM server is up and serving *model_id*; return its base URL.
@@ -161,13 +168,22 @@ def _format_response(thinking: str, content: str) -> str:
 
 
 def get_gemini_client() -> genai.Client:
-    """Return a client for the Gemini API."""
+    """Return a Vertex AI client.
+
+    Uses the project and application default credentials when
+    GOOGLE_CLOUD_PROJECT is set, and express mode (API key) otherwise. Only the
+    non-API key mode can submit batch jobs.
+    """
+    if config.GOOGLE_CLOUD_PROJECT:
+        return genai.Client(
+            vertexai=True,
+            project=config.GOOGLE_CLOUD_PROJECT,
+            location=config.GOOGLE_CLOUD_LOCATION,
+        )
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not api_key:
-        raise ValueError(
-            "GEMINI_API_KEY (or GOOGLE_API_KEY) environment variable is not set."
-        )
-    return genai.Client(api_key=api_key)
+        raise ValueError(NO_VERTEX_CREDENTIALS_MSG)
+    return genai.Client(vertexai=True, api_key=api_key)
 
 
 def _content_to_gemini_parts(user_content: List[dict]) -> List[types.Part]:
@@ -278,7 +294,7 @@ def _generate_response_gemini(
     temperature: float,
     seed: int,
 ) -> str:
-    """Generate a response using the Gemini Enterprise Agent Platform via API key."""
+    """Generate a response using a Gemini model on Vertex AI."""
     client = get_gemini_client()
 
     contents = [
