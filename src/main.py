@@ -35,7 +35,7 @@ def parse_args():
         type=str,
         choices=ALL_MODES,
         default="planner",
-        help="Mode of operation (e.g. planner, formalizer-direct, etc.)",
+        help="Mode of operation",
     )
     parser.add_argument(
         "--fast_downward_dir",
@@ -92,8 +92,10 @@ def parse_args():
     parser.add_argument(
         "--concurrency",
         type=int,
-        default=64,
-        help="Number of concurrent requests for local vLLM generation.",
+        default=8,
+        help="Number of concurrent generation requests. The default is safe for "
+        "hosted APIs (Gemini, OpenAI, OpenRouter). A dedicated vLLM server can "
+        "take far more (e.g. 128).",
     )
     parser.add_argument(
         "--processing_workers",

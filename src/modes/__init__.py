@@ -1,6 +1,6 @@
 from modes import (
     formalizer,
-    formalizer2,
+    perceiver,
     planner,
 )
 
@@ -9,9 +9,9 @@ MODE_REGISTRY: dict[str, dict] = {
         "kind": "formalizer",
         "module": formalizer,
     },
-    "formalizer2": {
+    "perceiver": {
         "kind": "formalizer",
-        "module": formalizer2,
+        "module": perceiver,
     },
     "planner": {
         "kind": "planner",

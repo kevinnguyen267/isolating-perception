@@ -12,9 +12,11 @@ import torch
 
 from utils.parse import (
     create_problem_from_sections,
+    extract_image_views,
     extract_output_from_response,
     normalize_problem,
 )
+from utils.stack_solver import stacks_to_pddl
 
 
 def seed_everything(seed: int):
@@ -190,10 +192,25 @@ def assemble_pddl_problem(
 ) -> tuple[str, str, str]:
     """Assemble a PDDL problem from pre-obtained VLM responses.
 
+    Each state comes as a single response covering all of the state's images. `perceiver`
+    shows every image at once but describes each of them in its own <imageN> block, so a
+    state's views arrive in one response with one view per block. The blocks are taken
+    apart and handed to the stack solver, which reconciles the views' disagreements into
+    one physically possible state. Every other mode's response is read as one account of
+    the scene.
+
     Returns: (problem, init_response_extracted, goal_response_extracted)
     """
-    init_preds, init_response_extracted = extract_output_from_response(init_response, mode)
-    goal_preds, goal_response_extracted = extract_output_from_response(goal_response, mode)
+
+    def _extract_state(response: str) -> tuple[list[str], str]:
+        if mode == "perceiver":
+            facts = sorted(stacks_to_pddl(extract_image_views(response)))
+            return facts, "\n".join(facts)
+
+        return extract_output_from_response(response)
+
+    init_preds, init_response_extracted = _extract_state(init_response)
+    goal_preds, goal_response_extracted = _extract_state(goal_response)
 
     # Extract domain name from the ground truth domain file
     match = re.search(r"\(domain\s+(\w+)\)", gt_domain)

@@ -3,6 +3,7 @@ import json
 import os
 import time
 import urllib.request
+from functools import lru_cache
 from pathlib import Path
 from typing import List
 
@@ -40,6 +41,7 @@ def image_block(path: Path) -> dict:
     }
 
 
+@lru_cache(maxsize=None)
 def get_client(model_id: str, use_openrouter: bool = False):
     """Return an OpenAI client configured for the specified model."""
     if use_openrouter:
@@ -120,24 +122,6 @@ def _create_completion(
             messages=messages,
             max_completion_tokens=max_tokens,
         )
-    elif model_id == "Qwen/Qwen3.5-122B-A10B":
-        # Recommended parameters for "thinking mode for general tasks" /
-        # "non-thinking mode for reasoning tasks" from HF
-        return client.chat.completions.create(
-            model=model_id,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=1.0,
-            top_p=0.95,
-            presence_penalty=1.5,
-            seed=seed,
-            extra_body={
-                "top_k": 20,
-                "min_p": 0.0,
-                "repetition_penalty": 1.0,
-                "chat_template_kwargs": {"enable_thinking": thinking},
-            },
-        )
     else:
         return client.chat.completions.create(
             model=model_id,
@@ -167,6 +151,7 @@ def _format_response(thinking: str, content: str) -> str:
     )
 
 
+@lru_cache(maxsize=1)
 def get_gemini_client() -> genai.Client:
     """Return a Vertex AI client.
 

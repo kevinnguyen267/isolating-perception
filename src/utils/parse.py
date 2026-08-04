@@ -1,11 +1,5 @@
 import re
 
-from utils.spatial_solver import (
-    neighbors_to_pddl,
-    partition_robot_lines,
-    resolve_spatial_relations,
-)
-
 # Alias to canonical name mapping
 ALIAS_MAP = {
     "robot": "robot_1",
@@ -196,6 +190,21 @@ def extract_normalized_problem(
     return prob_name, domain_name, objects, init, goal
 
 
+# Predicates that take the robot rather than a block, and so say nothing about where any
+# object is. Everything else in the domain -- `on`, `ontable`, `clear`, `holding` -- names at
+# least one block.
+_ROBOT_ONLY_PREDICATES = {"handempty", "handfull"}
+
+
+def has_object_facts(facts: set[str] | list[str]) -> bool:
+    """Whether a state places any object at all, ignoring the robot's own gripper facts."""
+    for fact in facts:
+        tokens = fact.strip("()").split()
+        if tokens and tokens[0].lower() not in _ROBOT_ONLY_PREDICATES:
+            return True
+    return False
+
+
 def create_problem_from_sections(
     prob_name: str,
     domain_name: str,
@@ -256,33 +265,42 @@ def normalize_plan(plan_text: str) -> str:
     return "\n".join(normalized_lines)
 
 
-def extract_output_from_response(response: str, mode: str) -> tuple[list[str], str]:
-    """For planner/formalizer modes, extract the last code block from the response and return a list of normalized lines and a single string.
-    For formalizer2 mode, extract the <image1> and <image2> blocks, resolve spatial relations, and return a list of normalized lines and a single string.
+def extract_image_views(response: str) -> list[list[str]]:
+    """Extract the <image1> and <image2> blocks of a response as one line list per view.
+
+    Views are returned in tag order, and a tag repeated in the response keeps only its last
+    block, so a response that restates its answer is read from the final pair of blocks.
+
+    Returns: one list of non-empty, stripped lines per <imageN> block present.
+    """
+    blocks: dict[str, list[str]] = {}
+    for tag, body in re.findall(
+        r"<(image[12])>((?:(?!<image[12]>).)*?)</\1>", response, re.DOTALL
+    ):
+        blocks[tag] = [s for s in (line.strip() for line in body.splitlines()) if s]
+    return [blocks[tag] for tag in sorted(blocks)]
+
+
+def extract_output_from_response(response: str) -> tuple[list[str], str]:
+    """Extract the last code block of a response as normalized `(...)` lines.
+
+    This is how the planner's plan and the formalizer's grounded predicates are read: both
+    answer in a single triple-backtick block, one statement per line. A response that
+    restates its answer is read from the final block.
+
+    Modes that describe each image in its own <imageN> block are read through
+    :func:`extract_image_views` instead, which keeps the views apart for
+    :func:`utils.stack_solver.stacks_to_pddl` to reconcile.
 
     Returns: (output_lst, output_str)"""
-    if mode == "planner" or mode == "formalizer":
-        output = []
-        match = re.findall(r"```(?:\w+)?\n(.*?)```", response, re.DOTALL)
-        if match:
-            lines = match[-1].strip().splitlines()
-            for line in lines:
-                tokens = (
-                    line.replace("(", " ").replace(")", " ").replace(",", " ").split()
-                )
-                if tokens:
-                    output.append(f"({' '.join(tokens)})")
+    output = []
+    match = re.findall(r"```(?:\w+)?\n(.*?)```", response, re.DOTALL)
+    if match:
+        lines = match[-1].strip().splitlines()
+        for line in lines:
+            tokens = line.replace("(", " ").replace(")", " ").replace(",", " ").split()
+            if tokens:
+                output.append(f"({' '.join(tokens)})")
 
-        output_str = "\n".join(output)
-        return output, output_str
-
-    blocks: dict[str, str] = {}
-    for tag, body in re.findall(r"<(image[12])>(.*?)</image[12]>", response, re.DOTALL):
-        blocks[tag] = body
-    lines = [
-        line for tag in sorted(blocks) for line in blocks[tag].strip().splitlines()
-    ]
-    object_lines, robot_lines = partition_robot_lines(lines)
-    output = neighbors_to_pddl(resolve_spatial_relations(object_lines), robot_lines)
-
-    return list(output), "\n".join(output)
+    output_str = "\n".join(output)
+    return output, output_str

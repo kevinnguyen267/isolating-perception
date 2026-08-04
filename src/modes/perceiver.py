@@ -11,22 +11,12 @@ def build_grounded_prompt(
     image_paths: List[Path],
     dataset: str,
 ) -> List[dict]:
-    """Return prompt for directly generating the grounded predicates from provided images."""
+    """Return prompt for describing the scene of the provided image as vertical stacks."""
     objects = extract_normalized_problem(problem_text)[2]
-    naming_hint = ""
+    naming_hint = "\n\n"
     if "(blue_block_1 - block)" in objects:
-        naming_hint = "\nFor example, blue_block_1 refers to the blue colored block with the number '1' on it."
-    hidden_object_hint_1 = ""
-    if dataset == "blocksworld_hidden":
-        hidden_object_hint_1 = (
-            "Before moving on to the next step, double check that you have accounted for all of the given objects "
-            "except for exactly one object that is hidden from view in both images. The hidden object's location can be "
-            "inferred from the visible objects.\n"
-        )
-    hidden_object_hint_2 = ""
-    if dataset == "blocksworld_hidden":
-        hidden_object_hint_2 = ", including the hidden object"
-        
+        naming_hint = "\nFor example, blue_block_1 refers to the blue colored block with the number '1' on it.\n\n"
+
     return [
         {
             "type": "text",
@@ -43,9 +33,8 @@ def build_grounded_prompt(
             "type": "text",
             "text": (
                 "First, list out the objects in each image.\n"
-                f"{hidden_object_hint_1}"
-                f"Next, create a mapping for each image in the following format for every object in that image{hidden_object_hint_2}:\n"
-                "<object>: <object above, or 'none'>, <object below, or 'none'>\n"
+                f"Next, create a mapping for each image in the following format for every vertical stack in that image:\n"
+                "<bottom object>, <object above>, <object above>, ..., <top object>\n"
                 "For each mapping, add a line for the robot in the following format:\n"
                 "<robot>: <object held, or 'none'> where 'none' indicates that the robot is not holding any object or the robot is not visible in the image."
             ),

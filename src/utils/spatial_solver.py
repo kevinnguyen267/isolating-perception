@@ -1,4 +1,3 @@
-import os
 from collections import Counter
 from itertools import combinations
 
@@ -8,7 +7,7 @@ _ABOVE = "above"
 _BELOW = "below"
 _NONE_VALUES = {"", "none", "null", "nothing"}
 
-# Override with SPATIAL_SOLVER_TIMEOUT_MS (0 disables the cap).
+# Wall-clock cap on a single solve; 0 disables the cap.
 _SOLVER_TIMEOUT_MS = 5 * 60 * 1000
 
 # Subjects that name the robot rather than a block. Matched case-insensitively against the
@@ -17,28 +16,6 @@ _ROBOT_NAMES = {"robot", "robot_1", "robot_arm", "robot arm", "gripper", "arm", 
 # Every dataset declares exactly one ``robot - robot`` object, so the robot facts always use
 # this name regardless of what the input called it. ``ALIAS_MAP`` maps it to ``robot_1``.
 _ROBOT_OBJECT = "robot"
-
-
-def _split_line(line: str) -> tuple[str, str, str] | None:
-    """Split ``<object>: <above>, <below>`` into ``(object, above, below)``.
-
-    Returns ``None`` for a blank line, or for a malformed one (no ``:`` or not exactly
-    two comma-separated fields).
-    """
-    line = line.strip()
-    if not line:
-        return None
-    if ":" not in line:
-        return None
-
-    subject, _, rhs = line.partition(":")
-    fields = [f.strip() for f in rhs.split(",")]
-    if len(fields) != 2:
-        return None
-
-    above, below = fields
-    below = below.split()[0] if below else "none"  # ignore extra tokens
-    return subject.strip(), above, below
 
 
 def _split_robot_line(line: str) -> str | None:
@@ -65,10 +42,10 @@ def _split_robot_line(line: str) -> str | None:
 def partition_robot_lines(lines: list[str]) -> tuple[list[str], list[str]]:
     """Split raw statement lines into ``(object_lines, robot_lines)``.
 
-    Only the object lines describe spatial relations, so only they belong in
-    :func:`resolve_spatial_relations`; the robot lines go straight to
-    :func:`neighbors_to_pddl`. Keeping the robot out of the solver also stops it from being
-    placed in a stack, which would emit ill-typed ``on``/``ontable`` facts for it.
+    Only the object lines describe where a block sits, so only they are translated into
+    placement claims; the robot lines are read separately for what the gripper holds.
+    Keeping the robot out of the solver also stops it from being placed in a stack, which
+    would emit ill-typed ``on``/``ontable`` facts for it.
     """
     object_lines, robot_lines = [], []
     for line in lines:
@@ -77,36 +54,6 @@ def partition_robot_lines(lines: list[str]) -> tuple[list[str], list[str]]:
         else:
             robot_lines.append(line)
     return object_lines, robot_lines
-
-
-def _parse_lines(
-    lines: list[str],
-) -> tuple[Counter[tuple[str, str]], set[str], Counter[tuple[str, str]]]:
-    """Parse raw input lines into weighted relations, subjects, and ``none`` observations.
-
-    Each direction is a separate relation, so ``A: B, C`` counts as one claim that ``B`` is above ``A``
-    and one claim that ``C`` is below ``A``. Each claim is weighted by how many times it appears
-    in the input.
-    """
-    weights: Counter[tuple[str, str]] = Counter()
-    subjects: set[str] = set()
-    none_obs: Counter[tuple[str, str]] = Counter()
-    for line in lines:
-        parsed = _split_line(line)
-        if parsed is None:
-            continue
-        subject, above, below = parsed
-
-        subjects.add(subject)
-        for direction, neighbor in ((_ABOVE, above), (_BELOW, below)):
-            if neighbor.lower() in _NONE_VALUES:
-                none_obs[(subject, direction)] += 1
-                continue
-            if direction == _ABOVE:
-                weights[(neighbor, subject)] += 1
-            else:
-                weights[(subject, neighbor)] += 1
-    return weights, subjects, none_obs
 
 
 class _Placement:
@@ -134,7 +81,7 @@ class _Placement:
     def slot_empty(self, obj: str, direction: str):
         """Constraint: no object occupies the cell directly ``direction`` of ``obj``.
 
-        Returns ``None`` when ``obj`` is the only object, since nothing can fill the slot.
+        Returns ``None`` when ``obj`` is the only object, since nothing can fill the cell.
         """
         offset = 1 if direction == _ABOVE else -1
         others = [
@@ -181,9 +128,16 @@ def _reliable_objects(weights: Counter[tuple[str, str]]) -> set[str]:
 def _best_supported_model(
     placement: _Placement,
     weights: Counter[tuple[str, str]],
-    none_obs: Counter[tuple[str, str]],
+    empty_obs: Counter[tuple[str, str]],
 ):
     """Solve for the placement satisfying the best-supported set of claims.
+
+    Args:
+        placement: The cell variables every constraint below is stated over.
+        weights: Claim support per ``(upper, lower)`` relation, as positive evidence that
+            the two are stacked.
+        empty_obs: Evidence per ``(object, direction)`` cell that the cell is empty, as
+            negative evidence against any relation that would fill it.
 
     Returns the solved model, or ``None`` if the solver fails.
     """
@@ -205,11 +159,11 @@ def _best_supported_model(
         endorsements = (upper in reliable) + (lower in reliable)
         opt.add_soft(placement.stacked(upper, lower), weight + endorsements * bonus)
 
-    # Negative evidence: each ``none`` observation of a slot votes (with no reliability
-    # bonus) for that slot staying empty, opposing any relation that would fill it. This is
-    # deliberately weak -- a single genuine claim still dominates -- so it only tips slots
+    # Negative evidence: each observation that a cell is empty votes (with no reliability
+    # bonus) for it staying empty, opposing any relation that would fill it. This is
+    # deliberately weak -- a single genuine claim still dominates -- so it only tips cells
     # that are otherwise a symmetric tie, toward the object seen isolated.
-    for (obj, direction), count in none_obs.items():
+    for (obj, direction), count in empty_obs.items():
         slot = placement.slot_empty(obj, direction)
         if slot is not None:
             opt.add_soft(slot, count)
@@ -228,127 +182,3 @@ def _best_supported_model(
         return opt.model()
     except Z3Exception:
         return None
-
-
-def resolve_spatial_relations(lines: list[str]) -> list[str]:
-    """Resolve possibly-conflicting spatial statements into consistent per-object neighbors.
-
-    Each input line has the form
-    ``<object>: <above>, <below>`` where either field may be ``none``.
-    Lines may repeat or conflict; the solver finds the object placement satisfying
-    the most statements (weighting each relation by how many input claims support it) and
-    returns the neighbors consistent with that placement.
-
-    Args:
-        lines: Raw statement lines.
-
-    Returns:
-        One line per object, in the same format as the input,
-        ``<object>: <above>, <below>``, where each field is the
-        neighbor object in that direction or ``none`` if there is none.
-    """
-    weights, subjects, none_obs = _parse_lines(lines)
-    if not weights:
-        # No relations to resolve, but isolated objects still round-trip.
-        return [f"{o}: none, none" for o in sorted(subjects)]
-
-    # Every object that appears as a subject (even all-``none``) or a neighbor gets a cell.
-    objects = sorted(subjects | {o for pair in weights for o in pair})
-
-    placement = _Placement(objects)
-    model = _best_supported_model(placement, weights, none_obs)
-    if model is None:
-        # Distinct-cell constraints are always satisfiable (spread objects out), so the only
-        # realistic cause is a timeout that expired before the first model.
-        print(
-            f"  [spatial_solver] no model for {len(objects)} objects "
-            f"(timeout={_SOLVER_TIMEOUT_MS}ms); no relations resolved"
-        )
-        return []
-
-    # Reconstruct per-object neighbors from the relations the placement satisfies.
-    above_of: dict[str, str] = {}
-    below_of: dict[str, str] = {}
-    for upper, lower in weights:
-        if model.eval(placement.stacked(upper, lower), model_completion=True):
-            above_of[lower] = upper
-            below_of[upper] = lower
-
-    return [
-        f"{o}: {above_of.get(o, 'none')}, {below_of.get(o, 'none')}" for o in objects
-    ]
-
-
-def _resolve_held(robot_lines: list[str]) -> str | None:
-    """Resolve possibly-conflicting robot statements into the single object being held.
-
-    Each image contributes its own robot line, so the views can disagree. The most-observed
-    answer wins; a tie falls back to an empty hand, as does an empty input.
-
-    Returns:
-        The held object, or ``None`` if the robot holds nothing.
-    """
-    observations: Counter[str | None] = Counter()
-    for line in robot_lines:
-        held = _split_robot_line(line)
-        if held is None:
-            continue
-        observations[None if held.lower() in _NONE_VALUES else held] += 1
-
-    if not observations:
-        return None
-
-    (winner, votes), *rest = observations.most_common()
-    if rest and rest[0][1] == votes:
-        return None  # tied views; assume the hand is empty
-    return winner
-
-
-def neighbors_to_pddl(
-    lines: list[str], robot_lines: list[str] | None = None
-) -> set[str]:
-    """Convert resolved neighbor lines into Blocksworld facts.
-
-    Each line in ``lines`` has the same ``<object>: <above>, <below>`` shape produced by
-    :func:`resolve_spatial_relations` (either field may be ``none``). The mapping is:
-
-      - ``below`` is a real object  -> ``(on <object> <below>)``
-      - ``below`` is ``none``       -> ``(ontable <object>)``
-      - ``above`` is ``none``       -> ``(clear <object>)``
-
-    Each line in ``robot_lines`` has the ``<robot>: <object held, or 'none'>`` shape, as
-    separated out by :func:`partition_robot_lines`. An empty hand becomes
-    ``(handempty <robot>)``; a held object becomes ``(handfull <robot>)`` plus
-    ``(holding <object>)``. Omitting the robot lines entirely leaves the hand empty.
-
-    A held object cannot also be resting in a stack, so it is detached from the stack graph:
-    it gets no facts of its own, and any block the input placed directly on it is emitted as
-    ``ontable`` instead. Note that this matches the held object by exact name, so an input
-    that calls it ``red`` on the robot line but ``red_1`` on its own line is not detached.
-
-    Malformed lines are skipped.
-    """
-    held = _resolve_held(robot_lines or [])
-
-    facts: set[str] = set()
-    for line in lines:
-        parsed = _split_line(line)
-        if parsed is None:
-            continue
-        obj, above, below = parsed
-        if obj == held:
-            continue
-
-        if below.lower() in _NONE_VALUES or below == held:
-            facts.add(f"(ontable {obj})")
-        else:
-            facts.add(f"(on {obj} {below})")
-        if above.lower() in _NONE_VALUES or above == held:
-            facts.add(f"(clear {obj})")
-
-    if held is None:
-        facts.add(f"(handempty {_ROBOT_OBJECT})")
-    else:
-        facts.add(f"(handfull {_ROBOT_OBJECT})")
-        facts.add(f"(holding {held})")
-    return facts

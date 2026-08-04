@@ -5,6 +5,7 @@ from plans.validate_plan import validate_plan
 from utils.parse import (
     create_problem_from_sections,
     extract_normalized_problem,
+    has_object_facts,
     normalize_problem,
 )
 
@@ -79,6 +80,9 @@ def compute_plan_success_with_ground_truth(
     ]
 
     for test_name, test_init, test_goal in tests:
+        if not (has_object_facts(test_init) and has_object_facts(test_goal)):
+            continue
+
         test_problem = normalize_problem(
             create_problem_from_sections(
                 prob_name, domain_name, objects, test_init, test_goal

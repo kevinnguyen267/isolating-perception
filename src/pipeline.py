@@ -16,6 +16,7 @@ from utils.helpers import (
 from utils.parse import (
     extract_normalized_problem,
     extract_output_from_response,
+    has_object_facts,
     normalize_plan,
     normalize_problem,
 )
@@ -97,12 +98,10 @@ def _generate_responses(
                 delay = min(delay * backoff_factor, max_delay)
         raise RuntimeError("Unreachable")
 
-    # Use concurrency for local vLLM
-    is_vllm = not (
-        args.use_openrouter or args.use_gemini or model_id.lower().startswith("gpt")
-    )
-    concurrency = max(1, getattr(args, "concurrency", 1)) if is_vllm else 1
-    concurrency = min(concurrency, len(requests))
+    # Every backend (vLLM, Gemini, OpenAI, OpenRouter) accepts many requests in
+    # flight at once, so --concurrency applies uniformly. The ceiling that matters
+    # is the provider's rate limit, not the client, so keep it low for hosted APIs.
+    concurrency = min(max(1, getattr(args, "concurrency", 1)), len(requests))
 
     results: dict[str, str] = {}
     if concurrency == 1:
@@ -218,7 +217,7 @@ def _run_planner(args, mode_module, model_id, output_dir, dataset_dir, use_batch
             return stats
 
         output_problem_dir = meta["output_problem_dir"]
-        _, plan_str = extract_output_from_response(response, args.mode)
+        _, plan_str = extract_output_from_response(response)
         plan = normalize_plan(plan_str)
         (output_problem_dir / "plan.txt").write_text(plan)
         (output_problem_dir / "response.txt").write_text(response)
@@ -258,21 +257,15 @@ def _run_formalizer(
 
         init_paths, goal_paths = extract_dataset_info(dataset_problem_dir)
 
-        init_prompt = mode_module.build_grounded_prompt(
-            gt_domain, gt_problem, init_paths, args.dataset
-        )
-        (output_problem_dir / "init_prompt.txt").write_text(
-            json.dumps(init_prompt, indent=4)
-        )
-        requests.append((f"{name}__init", init_prompt))
-
-        goal_prompt = mode_module.build_grounded_prompt(
-            gt_domain, gt_problem, goal_paths, args.dataset
-        )
-        (output_problem_dir / "goal_prompt.txt").write_text(
-            json.dumps(goal_prompt, indent=4)
-        )
-        requests.append((f"{name}__goal", goal_prompt))
+        # One prompt per state, covering every image of that state.
+        for section, paths in (("init", init_paths), ("goal", goal_paths)):
+            prompt = mode_module.build_grounded_prompt(
+                gt_domain, gt_problem, paths, args.dataset
+            )
+            (output_problem_dir / f"{section}_prompt.txt").write_text(
+                json.dumps(prompt, indent=4)
+            )
+            requests.append((f"{name}__{section}", prompt))
 
         problem_meta[name] = {
             "output_problem_dir": output_problem_dir,
@@ -299,9 +292,11 @@ def _run_formalizer(
     def _process_one(name: str, meta: dict) -> dict:
         stats: dict = {}
 
-        init_response = results.get(f"{name}__init", "")
-        goal_response = results.get(f"{name}__goal", "")
-        if not init_response or not goal_response:
+        responses = {
+            section: results.get(f"{name}__{section}", "")
+            for section in ("init", "goal")
+        }
+        if not all(responses.values()):
             print(f"  WARNING: missing response for {name}, skipping.")
             stats["plan_success"] = False
             return stats
@@ -312,8 +307,8 @@ def _run_formalizer(
         gt_problem_path = meta["gt_problem_path"]
         output_problem_dir = meta["output_problem_dir"]
 
-        (output_problem_dir / "init_response.txt").write_text(init_response)
-        (output_problem_dir / "goal_response.txt").write_text(goal_response)
+        for section, text in responses.items():
+            (output_problem_dir / f"{section}_response.txt").write_text(text)
 
         # Assemble PDDL problem
         (
@@ -321,8 +316,8 @@ def _run_formalizer(
             init_response_extracted,
             goal_response_extracted,
         ) = assemble_pddl_problem(
-            init_response,
-            goal_response,
+            responses["init"],
+            responses["goal"],
             meta["objects"],
             gt_domain,
             gt_problem,
@@ -337,6 +332,33 @@ def _run_formalizer(
         (output_problem_dir / "goal_response_extracted.txt").write_text(
             goal_response_extracted
         )
+
+        # Skip states without any object facts, since they cannot be solved by a planner.
+        _, _, _, init_facts, goal_facts = extract_normalized_problem(problem)
+        empty_sections = [
+            section
+            for section, facts in (("init", init_facts), ("goal", goal_facts))
+            if not has_object_facts(facts)
+        ]
+        if empty_sections:
+            print(
+                f"  WARNING: {name} parsed no object facts for "
+                f"{' and '.join(empty_sections)}, skipping planner."
+            )
+            stats["empty_sections"] = empty_sections
+            stats["plan_success"] = False
+            stats.update(
+                compute_plan_success_with_ground_truth(
+                    gt_problem,
+                    problem,
+                    gt_domain,
+                    gt_domain_path,
+                    gt_problem_path,
+                    downward_dir,
+                )
+            )
+            stats.update(compute_precision_recall_f1(gt_problem, problem))
+            return stats
 
         # Solve the generated problem using Fast Downward and validate if successful
         downward_success, _, plan = find_plan(gt_domain, problem, downward_dir)

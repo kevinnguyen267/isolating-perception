@@ -99,7 +99,7 @@ def _run_downward(command: str, plan_path: Path) -> Tuple[bool, str, str]:
 
 
 def find_plan(
-    domain: str, problem: str, downward_dir: Path, time_limit: int = 60
+    domain: str, problem: str, downward_dir: Path, time_limit: int = 300
 ) -> Tuple[bool, str, str]:
     """
     Finds a plan using Fast Downward.
