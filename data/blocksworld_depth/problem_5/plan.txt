@@ -1,0 +1,7 @@
+(unstack blue red robot)
+(stack blue orange robot)
+(pick-up green robot)
+(stack green red robot)
+(unstack purple yellow robot)
+(put-down purple robot)
+; cost = 6 (unit cost)
