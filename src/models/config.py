@@ -50,5 +50,13 @@ MODEL_CONFIG = {
             "--max-model-len", "40960",
             "--reasoning-parser", "gemma4",
         ],
+    },
+    "Gemma-4-12B": {
+        "model_id": "google/gemma-4-12B-it",
+        "openrouter_model_id": "google/gemma-4-12b-it",
+        "vllm_serve_args": [
+            "--max-model-len", "40960",
+            "--reasoning-parser", "gemma4",
+        ],
     }
 }
