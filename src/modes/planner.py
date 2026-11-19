@@ -4,6 +4,12 @@ from typing import List
 from utils.parse import extract_domain_sections, extract_normalized_problem
 from utils.vlm import image_block
 
+# Structural guidance added by the `*_priors` modes.
+PHYSICAL_PRIORS = (
+    "All blocks are the same physical size, support is vertical and discrete, and a block "
+    "can only be supported by one other block or the table.\n\n"
+)
+
 
 def build_prompt(
     domain_text: str,
@@ -11,8 +17,13 @@ def build_prompt(
     init_paths: List[Path],
     goal_paths: List[Path],
     dataset: str,
+    priors: bool = False,
 ) -> List[dict]:
-    """Return prompt for generating a plan (sequence of actions) to solve the task."""
+    """Return prompt for generating a plan (sequence of actions) to solve the task.
+
+    With `priors`, the prompt also states the physical constraints of the scene
+    (`PHYSICAL_PRIORS`).
+    """
     domain = extract_domain_sections(domain_text)
     objects = extract_normalized_problem(problem_text)[2]
     naming_hint = "\n\n"
@@ -32,6 +43,7 @@ def build_prompt(
                 "You are given a list of objects, a list of actions, "
                 "and two states: a current state and a target state. Each state is shown as two "
                 "images of the same physical scene from different camera views.\n\n"
+                f"{PHYSICAL_PRIORS if priors else ''}"
                 "Output the ordered sequence of actions that transforms the current state into the "
                 "target state.\n\n"
                 f"{hidden_object_hint}"
