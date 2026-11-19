@@ -80,12 +80,15 @@ def _view_to_predicates(lines: list[str]) -> list[str]:
     return predicates
 
 
-def stacks_to_pddl(views: list[list[str]]) -> set[str]:
+def stacks_to_pddl(views: list[list[str]], **solver_options) -> set[str]:
     """Ground several views' stack lines into one physically possible set of facts.
 
     Args:
         views: One list of raw response lines per view of the same scene, each list holding
             that view's stack lines and its robot line in any order.
+        solver_options: Passed through to :func:`utils.predicate_solver.predicates_to_pddl`
+            (`on_weight`, `empty_weight`, `reliability_bonus`). Leave empty except for
+            ablation.
 
     Returns:
         The Blocksworld facts of the best-supported placement, in the same form
@@ -94,4 +97,6 @@ def stacks_to_pddl(views: list[list[str]]) -> set[str]:
         above it, and `(handempty <robot>)` or `(handfull <robot>)` plus `(holding X)` for
         the robot. A block no view placed in any stack stays absent.
     """
-    return predicates_to_pddl([_view_to_predicates(view) for view in views])
+    return predicates_to_pddl(
+        [_view_to_predicates(view) for view in views], **solver_options
+    )

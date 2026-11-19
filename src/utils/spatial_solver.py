@@ -129,6 +129,7 @@ def _best_supported_model(
     placement: _Placement,
     weights: Counter[tuple[str, str]],
     empty_obs: Counter[tuple[str, str]],
+    reliability_bonus: bool = True,
 ):
     """Solve for the placement satisfying the best-supported set of claims.
 
@@ -138,6 +139,8 @@ def _best_supported_model(
             the two are stacked.
         empty_obs: Evidence per ``(object, direction)`` cell that the cell is empty, as
             negative evidence against any relation that would fill it.
+        reliability_bonus: Whether relations anchored by a reliable object (see
+            :func:`_reliable_objects`) get a bonus. Disabled only for ablation.
 
     Returns the solved model, or ``None`` if the solver fails.
     """
@@ -147,7 +150,7 @@ def _best_supported_model(
     for constraint in placement.distinct_cells():
         opt.add(constraint)
 
-    reliable = _reliable_objects(weights)
+    reliable = _reliable_objects(weights) if reliability_bonus else set()
     # A bonus worth more than every claim in the input put together, so that a relation
     # anchored by a self-consistent object wins a contested slot no matter how many
     # conflicting claims oppose it.

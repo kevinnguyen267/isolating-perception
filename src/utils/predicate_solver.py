@@ -27,9 +27,10 @@ _ARITY = {
 # empty cell is usually implied by a stack line rather than observed (see `stack_solver`),
 # so it is the weaker evidence. spatial_solver adds one soft constraint per relation and
 # one per empty cell, weighted by exactly these numbers, so the ratio is set here -- the
-# empty-cell evidence is only ever meant to break otherwise symmetric ties.
-_ON_WEIGHT = 2
-_EMPTY_WEIGHT = 1
+# empty-cell evidence is only ever meant to break otherwise symmetric ties. These are the
+# defaults of :func:`predicates_to_pddl`; other values are only used for ablation.
+ON_WEIGHT = 2
+EMPTY_WEIGHT = 1
 
 # No view said anything about the robot, as distinct from a view that said the hand is
 # empty. Only the latter is a vote.
@@ -58,6 +59,8 @@ def parse_predicates(lines: list[str]) -> list[list[str]]:
 
 def _collect_claims(
     views: list[list[str]],
+    on_weight: int,
+    empty_weight: int,
 ) -> tuple[Counter[tuple[str, str]], Counter[tuple[str, str]], set[str], Counter]:
     """Tally every view's predicates into solver input.
 
@@ -79,11 +82,11 @@ def _collect_claims(
             if pred == "on":
                 upper, lower = args
                 subjects.update((upper, lower))
-                weights[(upper, lower)] += _ON_WEIGHT
+                weights[(upper, lower)] += on_weight
             elif pred in ("ontable", "clear"):
                 subjects.add(args[0])
                 direction = _BELOW if pred == "ontable" else _ABOVE
-                empty_obs[(args[0], direction)] += _EMPTY_WEIGHT
+                empty_obs[(args[0], direction)] += empty_weight
             elif pred == "holding":
                 # `holding` names an object, so it beats a contradicting `handempty`.
                 held = args[0]
@@ -110,11 +113,21 @@ def _resolve_held(held_votes: Counter) -> str | None:
     return None if winner in _NONE_VALUES else winner
 
 
-def predicates_to_pddl(views: list[list[str]]) -> set[str]:
+def predicates_to_pddl(
+    views: list[list[str]],
+    on_weight: int = ON_WEIGHT,
+    empty_weight: int = EMPTY_WEIGHT,
+    reliability_bonus: bool = True,
+) -> set[str]:
     """Ground several views' predicates into one physically possible set of facts.
 
     Args:
         views: One list of raw `(pred arg ...)` lines per view of the same scene.
+        on_weight: Support each `(on X Y)` claim adds to its relation.
+        empty_weight: Support each `(clear X)` / `(ontable X)` claim adds to its cell
+            staying empty.
+        reliability_bonus: Whether the solver rewards relations anchored by objects that
+            no claim contradicts. See :func:`utils.spatial_solver._best_supported_model`.
 
     Returns:
         The Blocksworld facts of the placement satisfying the best-supported claims:
@@ -125,7 +138,9 @@ def predicates_to_pddl(views: list[list[str]]) -> set[str]:
         it gets no facts of its own, and any block claimed to rest on it becomes
         `ontable` instead.
     """
-    weights, empty_obs, subjects, held_votes = _collect_claims(views)
+    weights, empty_obs, subjects, held_votes = _collect_claims(
+        views, on_weight, empty_weight
+    )
     held = _resolve_held(held_votes)
     robot_facts = (
         {f"(handempty {_ROBOT_OBJECT})"}
@@ -143,7 +158,9 @@ def predicates_to_pddl(views: list[list[str]]) -> set[str]:
     below_of: dict[str, str] = {}
     if weights:
         placement = _Placement(objects)
-        model = _best_supported_model(placement, weights, empty_obs)
+        model = _best_supported_model(
+            placement, weights, empty_obs, reliability_bonus
+        )
         if model is None:
             # Distinct-cell constraints are always satisfiable (spread the objects out),
             # so the only realistic cause is a timeout that expired before the first model.

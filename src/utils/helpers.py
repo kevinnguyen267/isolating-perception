@@ -129,9 +129,7 @@ def verify_plans(dataset_dir: Path, downward_dir: Path):
                     exit(1)
     if plans_created:
         end_time = time.time()
-        print(
-            f"Plan verification completed in {round(end_time - start_time)} seconds."
-        )
+        print(f"Plan verification completed in {round(end_time - start_time)} seconds.")
 
 
 def setup_problem(
@@ -188,7 +186,8 @@ def assemble_pddl_problem(
     objects: set[str],
     gt_domain: str,
     gt_problem: str,
-    mode: str
+    mode: str,
+    solver_options: dict | None = None,
 ) -> tuple[str, str, str]:
     """Assemble a PDDL problem from pre-obtained VLM responses.
 
@@ -199,12 +198,16 @@ def assemble_pddl_problem(
     one physically possible state. Every other mode's response is read as one account of
     the scene.
 
+    `solver_options` is forwarded to :func:`utils.stack_solver.stacks_to_pddl` (perceiver
+    only) and is used only by the reconciler ablation.
+
     Returns: (problem, init_response_extracted, goal_response_extracted)
     """
 
     def _extract_state(response: str) -> tuple[list[str], str]:
         if mode == "perceiver":
-            facts = sorted(stacks_to_pddl(extract_image_views(response)))
+            views = extract_image_views(response)
+            facts = sorted(stacks_to_pddl(views, **(solver_options or {})))
             return facts, "\n".join(facts)
 
         return extract_output_from_response(response)
