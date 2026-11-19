@@ -9,9 +9,15 @@
 #                         [--max-model-len N] [--gpu-memory-utilization F] [-- <extra vllm args>]
 #
 # Examples of running in background and logging output (ensure logs/ directory exists first):
+# Note: these use the model aliases defined in src/models/config.py, which may differ from the HF id.
 #   nohup bash scripts/serve_vllm.sh --model Gemma-4-31B --gpus 4,5 >> logs/serve_vllm_gemma.log 2>&1 &
-#   nohup bash scripts/serve_vllm.sh --model Gemma-4-31B --gpus 4,5,6,7 --dp 2 >> logs/serve_vllm_gemma.log 2>&1 &
+#   nohup bash scripts/serve_vllm.sh --model Gemma-4-31B --gpus 4,5,6,7 --dp 4 >> logs/serve_vllm_gemma.log 2>&1 &
 #   nohup bash scripts/serve_vllm.sh --model Qwen3.5-122B-A10B --gpus 0,1,2,3 >> logs/serve_vllm_qwen.log 2>&1 &
+#
+# Environment:
+#   VENV   Path to a Python venv to activate first (default: use the current environment).
+#   Hugging Face and vLLM settings such as HF_HOME, HF_HUB_OFFLINE, VLLM_CACHE_ROOT and
+#   TMPDIR are passed through unchanged; set them in your shell to override the defaults.
 
 set -euo pipefail
 
@@ -40,13 +46,9 @@ done
 
 ROOT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." &> /dev/null && pwd )"
 cd "$ROOT_DIR"
-source ../venv/bin/activate || { echo "Venv failed" >&2; exit 1; }
-
-export HF_HOME="${HF_HOME:-/local-ssd/hf_cache/}"
-export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"   # set 0 to allow downloading a new model
-export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-/local-ssd/ktn48/.cache/vllm}"
-export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/local-ssd/ktn48/.cache}"
-export TMPDIR="${TMPDIR:-/local-ssd/ktn48/tmp}"
+if [[ -n "${VENV:-}" ]]; then
+  source "$VENV/bin/activate" || { echo "Could not activate venv at $VENV" >&2; exit 1; }
+fi
 
 # Resolve the HF id and the model's serve flags from MODEL_CONFIG, so this script and the
 # experiments agree on both. An unknown --model is passed through as a raw HF id.
@@ -152,4 +154,4 @@ if [[ "$WAIT" -eq 1 ]]; then
 fi
 
 echo "ready check:     curl -s http://127.0.0.1:$PORT/v1/models"
-echo "run experiments: VLLM_PORT=$PORT bash scripts/run_vllm_gemma.sh"
+echo "run experiments: scripts/run_vllm.sh --model $MODEL --port $PORT"
