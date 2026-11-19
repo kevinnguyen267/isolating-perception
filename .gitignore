@@ -1,7 +1,23 @@
+# Python
 __pycache__/
-.vscode
+*.py[cod]
+*.egg-info/
+.ruff_cache/
+.venv/
+venv/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+
+# Secrets
 .env
 
-data/
+# Fast Downward checkout and build
+downward/
+
+# Experiment outputs
 results/
+ablations/
 logs/
