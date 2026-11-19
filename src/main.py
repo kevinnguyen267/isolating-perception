@@ -64,7 +64,7 @@ def parse_args():
     parser.add_argument(
         "--use_openrouter",
         action="store_true",
-        help="Use OpenRouter for API requests (instead of OpenAI or vLLM server)",
+        help="Use OpenRouter for API requests (instead of a vLLM server)",
     )
     parser.add_argument(
         "--use_gemini",
@@ -75,7 +75,7 @@ def parse_args():
         "--batch",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Enable (--batch) or disable (--no-batch) batch processing for GPT (OpenAI Batch API) or Gemini (Gen AI batch) models (not applicable to OpenRouter)",
+        help="Enable (--batch) or disable (--no-batch) Vertex AI batch processing for Gemini models (--use_gemini only)",
     )
     parser.add_argument(
         "--seed",
@@ -153,18 +153,13 @@ def main():
         ):
             raise EnvironmentError(NO_VERTEX_BATCH_MSG)
     else:
-        if "vllm_serve_args" in MODEL_CONFIG[args.model_name]:
-            model_id = MODEL_CONFIG[args.model_name]["model_id"]
-            print(f"Using vLLM server at {verify_vllm_server(model_id)}")
-        elif args.model_name.lower().startswith("gpt"):
-            if "OPENAI_API_KEY" not in os.environ:
-                raise EnvironmentError("OPENAI_API_KEY environment variable not set.")
-        else:
+        if "vllm_serve_args" not in MODEL_CONFIG[args.model_name]:
             raise ValueError(
-                f"Model {args.model_name} is not configured for vLLM serving or OpenAI API."
+                f"Model {args.model_name} is not configured for vLLM serving."
             )
         model_id = MODEL_CONFIG[args.model_name]["model_id"]
-        use_batch = args.batch and args.model_name.lower().startswith("gpt")
+        print(f"Using vLLM server at {verify_vllm_server(model_id)}")
+        use_batch = False
 
     # Output directory
     mode_label = f"{'batch_' if use_batch else 'seq_'}{mode_str}"
@@ -173,7 +168,7 @@ def main():
         f"Running {args.dataset} using {args.model_name}{thinking_label} ({mode_label})..."
     )
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    if args.use_gemini or args.model_name.lower().startswith("gpt"):
+    if args.use_gemini:
         thinking_label = ""
     run_dir = (
         Path("results")

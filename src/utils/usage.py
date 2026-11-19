@@ -1,8 +1,7 @@
 """Collects the completion token count of every generation call in a run.
 
-Generation happens through several paths (synchronous, OpenAI batch, Gemini
-batch), so the counts are accumulated here instead of being threaded through
-every return value.
+Generation happens through several paths (synchronous and Gemini batch), so the
+counts are accumulated here instead of being threaded through every return value.
 """
 
 import threading

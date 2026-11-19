@@ -48,23 +48,15 @@ def _generate_responses(
         batch_requests = [
             build_batch_request(
                 custom_id=custom_id,
-                model_id=model_id,
                 user_content=prompt,
                 max_tokens=args.max_tokens,
                 temperature=args.temperature,
                 seed=args.seed,
-                use_gemini=args.use_gemini,
             )
             for custom_id, prompt in requests
         ]
         print(f"Submitting batch ({len(batch_requests)} requests)...")
-        return run_batch(
-            model_id,
-            batch_requests,
-            batch_file,
-            description=description,
-            use_gemini=args.use_gemini,
-        )
+        return run_batch(model_id, batch_requests, batch_file, description=description)
 
     def _one(
         custom_id: str,
@@ -98,7 +90,7 @@ def _generate_responses(
                 delay = min(delay * backoff_factor, max_delay)
         raise RuntimeError("Unreachable")
 
-    # Every backend (vLLM, Gemini, OpenAI, OpenRouter) accepts many requests in
+    # Every backend (vLLM, Gemini, OpenRouter) accepts many requests in
     # flight at once, so --concurrency applies uniformly. The ceiling that matters
     # is the provider's rate limit, not the client, so keep it low for hosted APIs.
     concurrency = min(max(1, getattr(args, "concurrency", 1)), len(requests))

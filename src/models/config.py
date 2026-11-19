@@ -21,15 +21,9 @@ VERTEX_BATCH_BUCKET = os.getenv("VERTEX_BATCH_BUCKET")  # gs://<bucket>[/<prefix
 # vllm_serve_args below are not used by the experiments; scripts/serve_vllm.sh
 # reads them so that the launch flags for a model live in one place.
 MODEL_CONFIG = {
-    "GPT-5.5": {
-        "model_id": "gpt-5.5-2026-04-23",
-    },
     "Gemini-3.1-Pro": {
         "openrouter_model_id": "google/gemini-3.1-pro-preview",
         "gemini_model_id": "gemini-3.1-pro-preview",
-    },
-    "Qwen3.6-Plus": {
-        "openrouter_model_id": "qwen/qwen3.6-plus",
     },
     "Qwen3.5-122B-A10B": {
         "model_id": "Qwen/Qwen3.5-122B-A10B",

@@ -42,8 +42,8 @@ def image_block(path: Path) -> dict:
 
 
 @lru_cache(maxsize=None)
-def get_client(model_id: str, use_openrouter: bool = False):
-    """Return an OpenAI client configured for the specified model."""
+def get_client(use_openrouter: bool = False):
+    """Return an OpenAI-compatible client for OpenRouter or the vLLM server."""
     if use_openrouter:
         if not os.getenv("OPENROUTER_API_KEY"):
             raise ValueError("OPENROUTER_API_KEY environment variable is not set.")
@@ -51,8 +51,6 @@ def get_client(model_id: str, use_openrouter: bool = False):
             api_key=os.environ["OPENROUTER_API_KEY"],
             base_url="https://openrouter.ai/api/v1",
         )
-    if model_id.startswith("gpt"):
-        return OpenAI()
     if config.VLLM_BASE_URL is None:
         raise RuntimeError(_NO_SERVER_MSG)
     return OpenAI(api_key="EMPTY", base_url=config.VLLM_BASE_URL, timeout=1800)
@@ -116,23 +114,16 @@ def _create_completion(
             seed=seed,
         )
 
-    if model_id.startswith("gpt"):
-        return client.chat.completions.create(
-            model=model_id,
-            messages=messages,
-            max_completion_tokens=max_tokens,
-        )
-    else:
-        return client.chat.completions.create(
-            model=model_id,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            seed=seed,
-            extra_body={
-                "chat_template_kwargs": {"enable_thinking": thinking},
-            },
-        )
+    return client.chat.completions.create(
+        model=model_id,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        seed=seed,
+        extra_body={
+            "chat_template_kwargs": {"enable_thinking": thinking},
+        },
+    )
 
 
 def _format_response(thinking: str, content: str) -> str:
@@ -331,14 +322,14 @@ def generate_response(
     seed: int,
     thinking: bool,
 ) -> str:
-    """Generate a response using the Gemini Agent Platform (Gen AI SDK), GPT/OpenRouter
+    """Generate a response using the Gemini Agent Platform (Gen AI SDK), OpenRouter
     (api_key), or local vLLM (base_url)."""
     if use_gemini:
         return _generate_response_gemini(
             model_id, user_content, max_tokens, temperature, seed
         )
 
-    client = get_client(model_id, use_openrouter)
+    client = get_client(use_openrouter)
 
     messages = [{"role": "user", "content": user_content}]
     response = _create_completion(
